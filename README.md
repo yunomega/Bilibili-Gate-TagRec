@@ -25,7 +25,7 @@ Bilibili-Gate 原有的首页推荐、动态、稍后再看、收藏、热门等
 
 ## 三步开始
 
-1. **安装。** 打开[安装页](https://www.tagrec.cn/install/)按向导装好脚本管理器与 TagRec（已有管理器可[直接安装脚本](https://www.tagrec.cn/dl/tagrec.user.js)）。
+1. **安装。** 打开[安装页](https://www.tagrec.cn/install/)按向导装好脚本管理器与 TagRec（已有管理器可[直接安装脚本](https://www.tagrec.cn/dl/tagrec.user.js)）。官网暂时打不开时，可到 [GitHub Releases](https://github.com/yunomega/Bilibili-Gate-TagRec/releases) 下载同版脚本安装。
 2. **选兴趣。** 到[集市](https://www.tagrec.cn/)挑一份配置导入；或在 B 站「标签发掘」输入「旅游」「电影」等词自己探索。
 3. **开始看。** 回 [B 站首页](https://www.bilibili.com/)打开「主题推荐」，选中兴趣，刷视频。
 
