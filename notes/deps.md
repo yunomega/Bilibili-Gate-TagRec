@@ -1,0 +1,62 @@
+## vite-plugin-importer
+
+```
+"vite-plugin-importer>babel-plugin-import": "^1.13.8"
+```
+
+- https://github.com/ant-design/ant-design/issues/43795
+- https://github.com/umijs/babel-plugin-import/releases/tag/v1.13.8
+
+## typescript
+
+https://github.com/microsoft/TypeScript/issues/58897#issuecomment-2220808697
+
+```
+pnpm add -D typescript@5.4.5
+```
+
+## `motion/react` v.s `framer-motion`
+
+- `frame-motion`更底层: `motion` 从 `frame-motion/dom` 重新导出, `motion/react` 从 `frame-motion` 重新导出
+- `motion` 的 dist 目录非常乱 https://www.npmjs.com/package/motion/v/12.9.2?activeTab=code 很多重复目录 `es` `lib` 等有多层级
+- `framer-motion` 有 UMD build, `motion` 有 UMD build, `motion/react` 无 UMD build
+- 所以还是继续用 framer-motion 就行
+
+## `mitt` v.s `emittery`
+
+emittery 可以直接 `emitter.once('event'): Promise<Data>`, 可以省掉 `p-event` 的使用
+
+## `@tanstack/react-hotkeys` v.s `ahooks.useKeyPress`
+
+```
+// refresh
+useKeyPress(
+  'r',
+  () => {
+    if (shouldDisableShortcut()) return
+    if (!refreshHotkeyEnabled) return
+    click()
+  },
+  { exactMatch: true },
+)
+```
+
+@tanstack/react-hotkeys
+
+- ❌ bigger bundle size
+- ✅ 省略 `exactMatch`: `exactMatch` 很蠢很啰嗦
+- ✅ enabled option, 不用在逻辑里 check 了
+- ✅ ignoreInputs 内置默认行为, 不需要 `shouldDisableShortcut`
+- ✅ typesafe key
+
+### `@tanstack/react-hotkeys` `requireReset` 问题
+
+`requireReset`: 默认 `false`; 防止 keydown 多次触发
+
+1. 在 keydown 中执行 callback;
+2. 设置 registration.fired = true
+3. 在 keyup 中执行 registration.fired = false, 即为 reset
+
+但在快捷键打开 new tab, 打开 pip window 的情况下, document keyup 事件无法触发, 无法 reset;
+造成需要按两次才能触发. https://github.com/magicdawn/Bilibili-Gate/issues/235
+默认值: lib 层: `false`, Provider 层; 需要 open/失去焦点 的场景需要明确 `requireReset: false`

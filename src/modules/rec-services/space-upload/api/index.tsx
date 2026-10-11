@@ -1,0 +1,112 @@
+/**
+ * https://socialsisteryi.github.io/bilibili-API-collect/docs/user/space.html#查询用户投稿视频明细
+ */
+
+import { isEmpty } from 'es-toolkit/compat'
+import pRetry from 'p-retry'
+import { appError } from '$common'
+import { IconForFav, IconForPlayer, IconForTimestamp } from '$modules/icon'
+import { isWebApiSuccess, request, WebApiError } from '$request'
+import type { ReactNode } from 'react'
+import type { SpaceUploadJson } from './space-upload.api'
+
+export enum SpaceUploadOrder {
+  Latest = 'pubdate',
+  View = 'click',
+  Fav = 'stow',
+}
+
+export const DefaultSpaceUploadOrder = SpaceUploadOrder.Latest
+
+export const SpaceUploadOrderConfig: Record<
+  SpaceUploadOrder,
+  { icon?: ReactNode; label?: ReactNode; helpInfo?: ReactNode }
+> = {
+  [SpaceUploadOrder.Latest]: {
+    icon: <IconForTimestamp />,
+    label: '最新发布',
+  },
+  [SpaceUploadOrder.View]: {
+    icon: <IconForPlayer />,
+    label: '最多播放',
+  },
+  [SpaceUploadOrder.Fav]: {
+    icon: <IconForFav />,
+    label: '最多收藏',
+  },
+}
+
+// Empty success response:
+// !TODO: 需排除搜索结果为空的情况
+// !TODO: 需排除就是没有的情况
+// {
+//     "list": {"slist": null,"tlist": null,"vlist": [] },
+//     "page": {"pn": 5,"ps": 40,"count": 0 },
+//     "is_risk": false,
+//     "gaia_res_type": 0,
+//     "gaia_data": null
+// }
+export class SpaceUploadEmptySuccessResponseError extends Error {
+  constructor(public rawJson: any) {
+    super()
+    this.name = 'SpaceUploadEmptySuccessResponseError'
+  }
+
+  static isEmptySuccessJson(json: any) {
+    return (
+      isWebApiSuccess(json) &&
+      json?.data?.page?.count === 0 &&
+      isEmpty(json?.data?.list?.slist) &&
+      isEmpty(json?.data?.list?.tlist) &&
+      isEmpty(json?.data?.list?.vlist)
+    )
+  }
+}
+
+// web default: 42
+export const SPACE_UPLOAD_API_PAGE_SIZE = 40
+
+export async function getSpaceUpload({
+  mid,
+  order = SpaceUploadOrder.Latest,
+  keyword = '',
+  pagenum = 1,
+}: {
+  mid: string | number
+  order?: SpaceUploadOrder
+  keyword?: string
+  pagenum?: number
+}) {
+  const resp = await request.get<SpaceUploadJson>('/x/space/wbi/arc/search', {
+    params: { mid, order, keyword, ps: SPACE_UPLOAD_API_PAGE_SIZE, pn: pagenum },
+  })
+
+  const result = WebApiError.validateAxiosResponse(resp, '获取用户投稿失败')
+  if (result.isErr()) throw result.error
+
+  // NOTE: 我触发不了了...不知道为什么
+  // if (SpaceUploadEmptySuccessResponseError.isEmptySuccessJson(json)) {
+  //   throw new SpaceUploadEmptySuccessResponseError(json)
+  // }
+
+  const json = resp.data
+  const items = json.data.list.vlist || []
+  const count = json.data.page.count
+  let hasMore: boolean
+  let endVol: number
+  {
+    const { count, pn, ps } = json.data.page
+    hasMore = pn * ps < count
+    endVol = count - (pn - 1) * ps
+  }
+
+  return { items, hasMore, count, endVol }
+}
+
+export async function tryGetSpaceUpload(...args: Parameters<typeof getSpaceUpload>) {
+  return await pRetry(() => getSpaceUpload(...args), {
+    retries: 5,
+    factor: 1.5,
+    onFailedAttempt: (err) => appError(`tryGetSpaceUpload attempt:${err.attemptNumber} error`, err.error),
+  })
+}

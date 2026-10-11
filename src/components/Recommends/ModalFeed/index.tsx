@@ -1,0 +1,139 @@
+import { useMemoizedFn } from 'ahooks'
+import clsx from 'clsx'
+import { memo, useMemo, useRef } from 'react'
+import { BaseModal, BaseModalClassNames, ModalClose } from '$components/_base/BaseModal'
+import { CollapseBtn } from '$components/_base/CollapseBtn'
+import { useModalDislikeVisible } from '$components/ModalDislike'
+import { useModalMoveFavVisible } from '$components/ModalFavManager'
+import { CheckboxSettingItem } from '$components/ModalSettings/setting-item'
+import { RecGrid } from '$components/RecGrid'
+import { gridDisplayModeChecker } from '$components/RecGrid/display-mode'
+import { clsTwoColumnModeWidth } from '$components/RecGrid/display-mode/two-column-mode'
+import { useModalsState } from '$components/RecHeader/modals'
+import { RefreshButton } from '$components/RecHeader/RefreshButton'
+import { useDeferredTab, VideoSourceTab } from '$components/RecHeader/tab'
+import { RecSidebar } from '$components/RecSidebar'
+import { EGridDisplayMode, ESidebarAlign, ETab } from '$enums'
+import { useSettingsSnapshot } from '$modules/settings'
+import { TagRecDiscoveryLayout } from '$modules/tag-rec/ui/discovery-layout'
+import { RecSelfContext, useInitRecSelf } from '../rec.shared'
+
+interface IProps {
+  show: boolean
+  onHide: () => void
+}
+
+/**
+ * 懒得维护了, 太复杂的旧不弄了
+ * two-column-mode: 基础支持, align 不管了, sidebar 不管了
+ */
+export const ModalFeed = memo(function ModalFeed({ show, onHide }: IProps) {
+  const {
+    grid: { gridDisplayMode },
+    modalFeedFullScreen,
+    sidebarAlign,
+  } = useSettingsSnapshot()
+  const { usingTwoColumnMode } = gridDisplayModeChecker(gridDisplayMode)
+  const useFullScreen = !usingTwoColumnMode && modalFeedFullScreen
+  const scrollerRef = useRef<HTMLDivElement | null>(null)
+
+  const modalBorderCls = useMemo(() => {
+    const borderWidth = useFullScreen ? 'b-5px' : 'b-1px'
+    return clsx(borderWidth, 'b-gate-primary b-solid')
+  }, [useFullScreen])
+
+  const onScrollToTop = useMemoizedFn(() => {
+    if (scrollerRef.current) {
+      scrollerRef.current.scrollTop = 0
+    }
+  })
+
+  const { modalSettingsVisible } = useModalsState()
+  const shortcutEnabled = [show, !modalSettingsVisible, !useModalDislikeVisible(), !useModalMoveFavVisible()].every(
+    Boolean,
+  )
+
+  const recSelf = useInitRecSelf(true)
+  const { tabbarView, sidebarView } = recSelf.useStore()
+  const { tab, direction } = useDeferredTab()
+
+  const renderHeader = () => {
+    return (
+      <div className={clsx(BaseModalClassNames.modalHeader, 'gap-x-15px pr-15px')}>
+        <div className='left flex flex-shrink-1 flex-wrap items-center gap-x-15px gap-y-4px'>
+          <VideoSourceTab />
+          {tab === ETab.TagRecCustom ? undefined : tabbarView}
+        </div>
+        <div className='right flex flex-shrink-0 items-center gap-x-8px'>
+          {gridDisplayMode === EGridDisplayMode.TwoColumnGrid ? null : (
+            <CollapseBtn initialOpen>
+              <ModalFeedConfigChecks />
+            </CollapseBtn>
+          )}
+          <RefreshButton refreshHotkeyEnabled={shortcutEnabled} tab={tab} />
+          <ModalClose onClick={onHide} className='ml-5px' />
+        </div>
+      </div>
+    )
+  }
+
+  const clsModalMask = clsx(usingTwoColumnMode && 'bg-black/90%') // why? I don't remember this
+  const clsBase = 'h-[calc(100vh-30px)] max-h-unset w-[calc(100vw-30px)] pr-0' // pr-0 滚动条右移
+  const clsFullScreen = 'h-full w-full'
+  const clsModal = clsx(
+    clsBase,
+    useFullScreen && clsFullScreen,
+    usingTwoColumnMode && clsTwoColumnModeWidth,
+    modalBorderCls,
+  )
+
+  return (
+    <RecSelfContext.Provider value={recSelf}>
+      <BaseModal show={show} onHide={onHide} clsModalMask={clsModalMask} clsModal={clsModal}>
+        {renderHeader()}
+        <div
+          data-role='modal-body'
+          className={clsx(
+            'flex flex-1 gap-x-25px overflow-hidden',
+            sidebarAlign === ESidebarAlign.Right && 'flex-row-reverse',
+          )}
+        >
+          {tab !== ETab.TagRecCustom && <RecSidebar tab={tab} sidebarView={sidebarView} className='max-h-full' />}
+          <div className='h-full flex-1 overflow-y-auto pr-15px' ref={scrollerRef}>
+            {tab === ETab.TagRecCustom ? (
+              <TagRecDiscoveryLayout controls={tabbarView}>
+                <RecGrid
+                  key={tab}
+                  tab={tab}
+                  direction={direction}
+                  shortcutEnabled={shortcutEnabled}
+                  onScrollToTop={onScrollToTop}
+                  infiniteScrollUseWindow={false}
+                  scrollerRef={scrollerRef}
+                />
+              </TagRecDiscoveryLayout>
+            ) : (
+              <RecGrid
+                key={tab}
+                tab={tab}
+                direction={direction}
+                shortcutEnabled={shortcutEnabled}
+                onScrollToTop={onScrollToTop}
+                infiniteScrollUseWindow={false}
+                scrollerRef={scrollerRef}
+              />
+            )}
+          </div>
+        </div>
+      </BaseModal>
+    </RecSelfContext.Provider>
+  )
+})
+
+function ModalFeedConfigChecks() {
+  return (
+    <>
+      <CheckboxSettingItem configPath='modalFeedFullScreen' label='全屏' tooltip='世界清净了~' />
+    </>
+  )
+}

@@ -1,0 +1,218 @@
+{
+  "packages": {
+    "@ant-design/icons-svg@4.6.0": {
+      "identifier": "MIT",
+      "source": "https://raw.githubusercontent.com/ant-design/ant-design-icons/7f2516ac91226d2b41f93b35cb5197c8d94f7189/LICENSE",
+      "explanation": "The npm artifact omits LICENSE; retained from the matching upstream release commit.",
+      "textFile": "packages/ant-design-icons-svg-4.6.0.txt"
+    },
+    "is-mobile@5.0.0": {
+      "identifier": "MIT",
+      "source": "https://raw.githubusercontent.com/juliangruber/is-mobile/2708dd8f07d91f354a46b8dff3053abb6b840067/README.md",
+      "explanation": "The complete licence is supplied in the matching release README, rather than a standalone LICENSE file.",
+      "textFile": "packages/is-mobile-5.0.0.txt"
+    },
+    "valtio-select@0.3.0": {
+      "identifier": "MIT",
+      "source": "https://raw.githubusercontent.com/ts-zen/valtio-select/fe7825045b51a8e185c7e69bf70c5b225ce3c5b8/README.md",
+      "explanation": "The locked release README explicitly states Copyright © 2025 tszen and MIT. Its LICENSE contains only the disclaimer, preserved above. The distributor supplies standard MIT terms below based on that declaration; this is a supplement, not an upstream LICENSE file.",
+      "textFile": "packages/valtio-select-0.3.0.txt"
+    },
+    "ahooks@3.10.0": {
+      "identifier": "MIT",
+      "source": "https://raw.githubusercontent.com/alibaba/hooks/39a07ee8385cc61d080913bef4655e29a8765f0c/LICENSE",
+      "explanation": "The npm artifact omits LICENSE; retained from the official v3.10.0 release tag, whose package version was checked. The npm gitHead points to an older version and was not used.",
+      "textFile": "packages/ahooks-3.10.0.txt"
+    }
+  },
+  "icons": {
+    "eos-icons": {
+      "dataVersion": "2.2.528",
+      "identifier": "MIT",
+      "source": "https://gitlab.com/SUSE-UIUX/eos-icons/-/blob/master/LICENSE",
+      "textFile": "icons/eos-icons.txt",
+      "retrievedOn": "2026-10-01",
+      "sha256": "8a193941d284cd81e7264fda32127c4d0e3027d374da3a278edec054aaba3e75"
+    },
+    "lucide": {
+      "dataVersion": "2.2.528",
+      "identifier": "ISC",
+      "source": "https://github.com/lucide-icons/lucide/blob/main/LICENSE",
+      "textFile": "icons/lucide.txt",
+      "retrievedOn": "2026-10-01",
+      "sha256": "b495047bd93a9b06913511076f504daba17d5bbeb3e0650f3bb53a4220329c57"
+    },
+    "ph": {
+      "dataVersion": "2.2.528",
+      "identifier": "MIT",
+      "source": "https://github.com/phosphor-icons/core/blob/main/LICENSE",
+      "textFile": "icons/ph.txt",
+      "retrievedOn": "2026-10-01",
+      "sha256": "b5b1f1da112d18ea2147decfd48ddc1bf2b5aeb6c265381579340e95b15a2bb2"
+    },
+    "fluent": {
+      "dataVersion": "2.2.528",
+      "identifier": "MIT",
+      "source": "https://github.com/microsoft/fluentui-system-icons/blob/main/LICENSE",
+      "textFile": "icons/fluent.txt",
+      "retrievedOn": "2026-10-01",
+      "sha256": "69bc45dc42b9acb96a69823adbc6ae538374e3c0bde169b855b32c48eaaef52f"
+    },
+    "line-md": {
+      "dataVersion": "2.2.528",
+      "identifier": "MIT",
+      "source": "https://github.com/cyberalien/line-md/blob/main/license.txt",
+      "textFile": "icons/line-md.txt",
+      "retrievedOn": "2026-10-01",
+      "sha256": "2b88bafca347c6a12c33612fa51c5efbdd00c2753ed67fc474d7a6af9c61e430"
+    },
+    "akar-icons": {
+      "dataVersion": "2.2.528",
+      "identifier": "MIT",
+      "source": "https://github.com/artcoholic/akar-icons/blob/master/LICENSE",
+      "textFile": "icons/akar-icons.txt",
+      "retrievedOn": "2026-10-01",
+      "sha256": "87500dbc60dd758dc91c72927a647ed4fdb162effc6dbc2073a2c9f51ba695c0"
+    },
+    "ion": {
+      "dataVersion": "2.2.528",
+      "identifier": "MIT",
+      "source": "https://github.com/ionic-team/ionicons/blob/main/LICENSE",
+      "textFile": "icons/ion.txt",
+      "retrievedOn": "2026-10-01",
+      "sha256": "c89dabc60b2e4e1a04b33bd7010b5a56bb4725ffe8c00d793a5ae009fbbfebd8"
+    },
+    "material-symbols": {
+      "dataVersion": "2.2.528",
+      "identifier": "Apache-2.0",
+      "source": "https://github.com/google/material-design-icons/blob/master/LICENSE",
+      "textFile": "icons/material-symbols.txt",
+      "retrievedOn": "2026-10-01",
+      "sha256": "50e6751797c50dedd75ef1b8a0d9e42f5f8472e9fbce91f34718e9f97b0c780a"
+    },
+    "cuida": {
+      "dataVersion": "2.2.528",
+      "identifier": "Apache-2.0",
+      "source": "https://github.com/Sysvale/cuida-icons/blob/main/LICENSE",
+      "textFile": "icons/cuida.txt",
+      "retrievedOn": "2026-10-01",
+      "sha256": "50e6751797c50dedd75ef1b8a0d9e42f5f8472e9fbce91f34718e9f97b0c780a"
+    },
+    "mdi": {
+      "dataVersion": "2.2.528",
+      "identifier": "Apache-2.0",
+      "source": "https://github.com/Templarian/MaterialDesign/blob/master/LICENSE",
+      "textFile": "icons/mdi.txt",
+      "retrievedOn": "2026-10-01",
+      "sha256": "7f5e67edf2f7dad9d3f78494dafeeb3bda2c399e7a607461a166acb70f45cf5d"
+    },
+    "mingcute": {
+      "dataVersion": "2.2.528",
+      "identifier": "Apache-2.0",
+      "source": "https://github.com/Richard9394/MingCute/blob/main/LICENSE",
+      "textFile": "icons/mingcute.txt",
+      "retrievedOn": "2026-10-01",
+      "sha256": "50e6751797c50dedd75ef1b8a0d9e42f5f8472e9fbce91f34718e9f97b0c780a"
+    },
+    "icon-park-outline": {
+      "dataVersion": "2.2.528",
+      "identifier": "Apache-2.0",
+      "source": "https://github.com/bytedance/IconPark/blob/master/LICENSE",
+      "textFile": "icons/icon-park-outline.txt",
+      "retrievedOn": "2026-10-01",
+      "sha256": "55397a61e3b86f6ec745aaffd5d782ff6d6e6fde92f511ebd6345b5919749d13"
+    },
+    "material-symbols-light": {
+      "dataVersion": "2.2.528",
+      "identifier": "Apache-2.0",
+      "source": "https://github.com/google/material-design-icons/blob/master/LICENSE",
+      "textFile": "icons/material-symbols-light.txt",
+      "retrievedOn": "2026-10-01",
+      "sha256": "50e6751797c50dedd75ef1b8a0d9e42f5f8472e9fbce91f34718e9f97b0c780a"
+    },
+    "ri": {
+      "dataVersion": "2.2.528",
+      "identifier": "Apache-2.0",
+      "source": "https://github.com/cyberalien/RemixIcon/blob/master/License",
+      "textFile": "icons/ri.txt",
+      "retrievedOn": "2026-10-01",
+      "sha256": "50e6751797c50dedd75ef1b8a0d9e42f5f8472e9fbce91f34718e9f97b0c780a"
+    },
+    "ic": {
+      "dataVersion": "2.2.528",
+      "identifier": "Apache-2.0",
+      "source": "https://github.com/material-icons/material-icons/blob/master/LICENSE",
+      "textFile": "icons/ic.txt",
+      "retrievedOn": "2026-10-01",
+      "sha256": "50e6751797c50dedd75ef1b8a0d9e42f5f8472e9fbce91f34718e9f97b0c780a"
+    },
+    "carbon": {
+      "dataVersion": "2.2.528",
+      "identifier": "Apache-2.0",
+      "source": "https://github.com/carbon-design-system/carbon/blob/main/LICENSE",
+      "textFile": "icons/carbon.txt",
+      "retrievedOn": "2026-10-01",
+      "sha256": "07cc4dfc679d0ad5e59feb9193867822a5e85fe043394de3739682bf6b462e35"
+    },
+    "bi": {
+      "dataVersion": "2.2.528",
+      "identifier": "MIT",
+      "source": "https://github.com/twbs/icons/blob/main/LICENSE",
+      "textFile": "icons/bi.txt",
+      "retrievedOn": "2026-10-01",
+      "sha256": "0fb3e11bd57e896c5a512afd64864d28a37de45d19835016c87ca1ad19ead969"
+    },
+    "svg-spinners": {
+      "dataVersion": "2.2.528",
+      "identifier": "MIT",
+      "source": "https://github.com/n3r4zzurr0/svg-spinners/blob/main/LICENSE",
+      "textFile": "icons/svg-spinners.txt",
+      "retrievedOn": "2026-10-01",
+      "sha256": "f29a6fd1beb1c4f4258ea17e44ec79bbea55a19215fbd6823eed2dbcefb70194"
+    },
+    "tabler": {
+      "dataVersion": "2.2.528",
+      "identifier": "MIT",
+      "source": "https://github.com/tabler/tabler-icons/blob/master/LICENSE",
+      "textFile": "icons/tabler.txt",
+      "retrievedOn": "2026-10-01",
+      "sha256": "b740a1d46122672da62833e97f7e7c8a13fa85cbc7445b584b297cc00dde93db"
+    },
+    "mynaui": {
+      "dataVersion": "2.2.528",
+      "identifier": "MIT",
+      "source": "https://github.com/praveenjuge/mynaui-icons/blob/main/LICENSE",
+      "textFile": "icons/mynaui.txt",
+      "retrievedOn": "2026-10-01",
+      "sha256": "eebf4868e5d0ea0dda86648bb1cd0caa67a3fca0c49fa15cf469b9896e6b0ff9"
+    },
+    "radix-icons": {
+      "dataVersion": "2.2.528",
+      "identifier": "MIT",
+      "source": "https://github.com/radix-ui/icons/blob/master/LICENSE",
+      "textFile": "icons/radix-icons.txt",
+      "retrievedOn": "2026-10-01",
+      "sha256": "0e80a2d229d2fd4fc7e8636142ec5d0ff0bc031f14c15b682e2ac01dfd5b5138"
+    },
+    "lets-icons": {
+      "dataVersion": "2.2.528",
+      "identifier": "CC-BY-4.0",
+      "source": "https://creativecommons.org/licenses/by/4.0/",
+      "text": "Lets Icons by Leonid Tsvetkov. Original source: https://www.figma.com/community/file/886554014393250663 . Licensed under CC BY 4.0: https://creativecommons.org/licenses/by/4.0/ . Obtained via Iconify. SVG data is compiled into React components and displayed with interface size/colour settings. The author does not endorse this project.",
+      "retrievedOn": "2026-10-01"
+    }
+  },
+  "resources": [],
+  "projectNotices": [
+    {
+      "name": "Upstream Bilibili-Gate (magicdawn/Bilibili-Gate)",
+      "source": "https://github.com/magicdawn/Bilibili-Gate",
+      "textFile": "packages/bilibili-gate-upstream.txt"
+    },
+    {
+      "name": "Ancestral Bilibili home script (indefined/UserScripts)",
+      "source": "https://github.com/indefined/UserScripts",
+      "textFile": "packages/indefined-userscripts.txt"
+    }
+  ]
+}

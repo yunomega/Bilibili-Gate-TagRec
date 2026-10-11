@@ -1,0 +1,78 @@
+import { baseDebug } from '$common'
+import { request, WebApiError } from '$request'
+import { normalizeDynamicFeedItem } from './df-normalize'
+import type { DynamicFeedJson } from '$define'
+import type { UpMidType } from '../store'
+
+const dfTypes = new Set<string>()
+const majorTypes = new Set<string>()
+const arr: any[] = []
+function collectData(data: DynamicFeedJson['data']) {
+  data.items.forEach((x) => {
+    const majorType = x.modules.module_dynamic.major?.type
+    if (!dfTypes.has(x.type) || (majorType && !majorTypes.has(majorType))) {
+      dfTypes.add(x.type)
+      majorType && majorTypes.add(majorType)
+      arr.push(x)
+      console.log('df-collected-data', { dfTypes, majorTypes, arr })
+    }
+  })
+}
+
+const debug = baseDebug.extend('modules:rec-services:dynamic-feed:api')
+
+export async function fetchDynamicFeeds({
+  videoOnly,
+  offset,
+  page,
+  upMid,
+  abortSignal,
+}: {
+  videoOnly: boolean
+  offset?: string
+  page: number
+  upMid?: UpMidType
+  abortSignal?: AbortSignal
+}) {
+  const params: Record<string, number | string> = {
+    'timezone_offset': '-480',
+    'type': videoOnly ? 'video' : 'all',
+    'platform': 'web',
+    'features': 'itemOpusStyle',
+    'web_location': '0.0',
+    'x-bili-device-req-json': JSON.stringify({ platform: 'web', device: 'pc' }),
+    'x-bili-web-req-json': JSON.stringify({ spm_id: '0.0' }),
+    'page': page,
+  }
+  if (offset) {
+    params.offset = offset
+  }
+
+  const apiPath = '/x/polymer/web-dynamic/v1/feed/all'
+  if (upMid) {
+    params.host_mid = upMid
+    // 未关注, 也可以查询, 但有风控 (code -352) ...
+    // apiPath = '/x/polymer/web-dynamic/v1/feed/space'
+  }
+
+  const res = await request.get<DynamicFeedJson>(apiPath, { params, signal: abortSignal })
+  const json = WebApiError.validateAxiosResponse(res, '获取动态失败').unwrap()
+
+  const data = json.data
+  if (data?.items?.length) {
+    data.items = data.items.filter((item) => {
+      const valid = !!normalizeDynamicFeedItem(item)
+      if (!valid) {
+        debug('dynamic-feed filter out: %o', {
+          type: item.type,
+          majorType: item.modules.module_dynamic.major?.type,
+          additionalType: item.modules.module_dynamic.additional?.type,
+          item,
+        })
+      }
+      return valid
+    })
+  }
+
+  return data
+}

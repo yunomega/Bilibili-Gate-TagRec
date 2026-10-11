@@ -1,0 +1,61 @@
+import clsx from 'clsx'
+import { once } from 'es-toolkit'
+import { proxy, useSnapshot } from 'valtio'
+import { APP_CLS_ROOT, createReactRoot } from '$common'
+import { AppRoot } from '$components/AppRoot'
+import type { ComponentType } from 'react'
+import type { AnyFunction } from './type'
+
+export function wrapComponent<IProps extends object>({
+  Component,
+  defaultProps,
+  containerClassName,
+}: {
+  Component: ComponentType<IProps>
+  defaultProps: IProps
+  containerClassName?: string
+}) {
+  const proxyProps = proxy<IProps>(defaultProps)
+
+  function WrappedComponent() {
+    const props = useSnapshot(proxyProps)
+    // https://github.com/emotion-js/emotion/issues/3245
+    // @ts-ignore
+    return <Component {...props} />
+  }
+
+  const mount = once(() => {
+    const div = document.createElement('div')
+    div.className = clsx(APP_CLS_ROOT, containerClassName)
+    document.body.appendChild(div)
+
+    const root = createReactRoot(div)
+    root.render(
+      <AppRoot>
+        <WrappedComponent />
+      </AppRoot>,
+    )
+  })
+
+  function wrapAction<T extends AnyFunction>(action: T) {
+    return (...args: Parameters<T>): ReturnType<T> => {
+      mount()
+      return action(...args)
+    }
+  }
+
+  type PartialWithStrictValues<T> = {
+    [K in keyof T]?: T[K]
+  }
+  const updateProps = wrapAction((newProps: PartialWithStrictValues<IProps>) => {
+    Object.assign(proxyProps, newProps)
+  })
+
+  return {
+    WrappedComponent,
+    proxyProps,
+    mount,
+    wrapAction,
+    updateProps,
+  }
+}

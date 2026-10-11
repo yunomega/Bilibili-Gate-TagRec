@@ -1,0 +1,132 @@
+import { DndContext, useDndMonitor, useDraggable } from '@dnd-kit/core'
+import { CSS } from '@dnd-kit/utilities'
+import { useMount } from 'ahooks'
+import { Button } from 'antd'
+import { useMemo, type ComponentProps } from 'react'
+import { useUnoMerge } from 'unocss-merge/react'
+import { useSnapshot } from 'valtio'
+import { APP_NAME, appLog } from '$common'
+import { useDelegatedRef } from '$common/hooks/mixed-ref'
+import { $windowSize } from '$common/hooks/useWindowSize'
+import { clsZGateFloatEntry } from '$components/fragments'
+import { showModalFeed, toggleModalSettings } from '$components/RecHeader/modals'
+import { AntdTooltip } from '$modules/antd/custom'
+import { IconForConfig, IconForOpenExternalLink } from '$modules/icon'
+import { getGateEntryHref } from '$routes'
+import { minmax } from '$utility/num'
+import { proxyWithLocalStorage } from '$utility/valtio'
+
+type InlineAlign = 'left' | 'right'
+
+const floatEntryStore = proxyWithLocalStorage(
+  {
+    align: 'right' as InlineAlign,
+    top: 100, // px
+  },
+  'float-entry',
+)
+
+const C = {
+  wrapperInner: 'flex flex-col items-center gap-y-8px b-1px b-gate-primary rounded-18px b-solid bg-gate-bg p-4px',
+  buttonIcon: 'size-18px',
+}
+
+export function GateFloatEntry() {
+  return (
+    <DndContext>
+      <GateFloatEntryInner />
+    </DndContext>
+  )
+}
+
+function GateFloatEntryInner() {
+  const { align, top } = useSnapshot(floatEntryStore, { sync: true })
+
+  const tooltipConfig: Partial<ComponentProps<typeof AntdTooltip>> = useMemo(() => {
+    const factor = align === 'right' ? -1 : 1
+    return {
+      arrow: false,
+      placement: align === 'right' ? 'left' : 'right',
+      align: { offset: [10 * factor, 0] },
+    }
+  }, [align])
+
+  const gateEntryHref = useMemo(getGateEntryHref, [])
+
+  const { attributes, listeners, setNodeRef, setActivatorNodeRef, transform } = useDraggable({ id: 'GateFloatEntry' })
+
+  useDndMonitor({
+    onDragEnd(e) {
+      if (e.active.id === 'GateFloatEntry') {
+        $windowSize.update()
+        const rect = wrapperRef.current?.getBoundingClientRect()
+        if (!rect) return
+
+        const top = minmax(Math.round(rect.top), 0, window.innerHeight - rect.height)
+        let align = floatEntryStore.align
+        const shouldChangeAlign =
+          (floatEntryStore.align === 'right' && rect.left < window.innerWidth / 4) ||
+          (floatEntryStore.align === 'left' && rect.right > (window.innerWidth / 4) * 3)
+        if (shouldChangeAlign) align = floatEntryStore.align === 'right' ? 'left' : 'right'
+
+        appLog('new pos', { align, top })
+        floatEntryStore.align = align
+        floatEntryStore.top = top
+
+        wrapperRef.current?.animate(
+          [
+            {
+              transform:
+                align === 'right' ? `translateX(-${window.innerWidth - rect.right}px)` : `translateX(${rect.left}px)`,
+            },
+            { transform: 'translateX(0)' },
+          ],
+          { duration: 200, easing: 'ease-in-out' },
+        )
+      }
+    },
+  })
+
+  const wrapperRef = useDelegatedRef<HTMLDivElement>(setNodeRef)
+
+  // width: 48px
+  const wrapperClassName = useUnoMerge(
+    'fixed transition-250 transition-ease-in-out transition-property-right,left',
+    clsZGateFloatEntry,
+    align === 'right' && 'right--34px pr-10px hover:(right--5px)',
+    align === 'left' && 'left--34px pl-10px hover:(left--5px)',
+  )
+
+  useMount($windowSize.updateThrottled)
+  const { height: windowHeight } = $windowSize.use()
+  const usingTop = useMemo(() => minmax(top, 0, windowHeight - 150), [top, windowHeight])
+
+  return (
+    <div
+      ref={wrapperRef}
+      className={wrapperClassName}
+      style={{ top: `${usingTop}px`, transform: CSS.Transform.toString(transform) }}
+    >
+      <div className={C.wrapperInner}>
+        <AntdTooltip title={<>{APP_NAME}: 在新窗口打开</>} {...tooltipConfig}>
+          <Button className='icon-only-round-button' href={gateEntryHref} target='_blank'>
+            <IconForOpenExternalLink className={C.buttonIcon} />
+          </Button>
+        </AntdTooltip>
+        <AntdTooltip title={<>{APP_NAME}: 弹窗打开</>} {...tooltipConfig}>
+          <Button className='icon-only-round-button' onClick={showModalFeed}>
+            <IconParkOutlineRight className={C.buttonIcon} />
+          </Button>
+        </AntdTooltip>
+        <AntdTooltip title={<>{APP_NAME}: 设置</>} {...tooltipConfig}>
+          <Button className='icon-only-round-button' onClick={toggleModalSettings}>
+            <IconForConfig className={C.buttonIcon} />
+          </Button>
+        </AntdTooltip>
+        <Button className='icon-only-round-button cursor-move' {...listeners} {...attributes} ref={setActivatorNodeRef}>
+          <IconParkOutlineDrag className='size-14px' />
+        </Button>
+      </div>
+    </div>
+  )
+}

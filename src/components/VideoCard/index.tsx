@@ -1,0 +1,879 @@
+import { css } from '@emotion/react'
+import { useLockFn, useMemoizedFn, useUpdateEffect } from 'ahooks'
+import { Dropdown } from 'antd'
+import clsx from 'clsx'
+import {
+  memo,
+  useMemo,
+  useRef,
+  type ComponentProps,
+  type ComponentRef,
+  type CSSProperties,
+  type MouseEventHandler,
+  type ReactNode,
+} from 'react'
+import { useUnoMerge } from 'unocss-merge/react'
+import { useSnapshot } from 'valtio'
+import {
+  APP_CLS_CARD,
+  APP_CLS_CARD_ACTIVE,
+  APP_CLS_CARD_COVER,
+  APP_CLS_ROOT,
+  APP_KEY_PREFIX,
+  appError,
+  appWarn,
+} from '$common'
+import { useEmitterOn } from '$common/hooks/useEmitter'
+import { isEmptyFragment } from '$common/hooks/useIsEmptyFragment'
+import { useLessFrequentFn } from '$common/hooks/useLessFrequentFn'
+import { useRefStateBox } from '$common/hooks/useRefState'
+import { Picture } from '$components/_base/Picture'
+import { clsZVideoCardContextMenu } from '$components/fragments'
+import { calcRecItemDislikedMapKey, useDislikedReason } from '$components/ModalDislike/store'
+import { isDisplayAsList } from '$components/RecGrid/display-mode'
+import { getBvidInfo } from '$components/RecGrid/rec-grid-state'
+import { setGlobalValue } from '$components/RecGrid/unsafe-window-export'
+import { defaultRecSharedEmitter, type RecSharedEmitter } from '$components/Recommends/rec.shared'
+import { clsGateVideoCardContextMenuRoot } from '$components/shared.module.scss'
+import {
+  checkIsAppRecommend,
+  checkIsFav,
+  checkIsHistory,
+  checkIsLive,
+  checkIsPcRecommend,
+  checkIsRank,
+  checkIsSpaceUpload,
+  checkIsWatchlater,
+  type PvideoJson,
+  type RecItemType,
+} from '$define'
+import { PcRecGoto } from '$define/pc-recommend'
+import { EApiType, ELiveStatus, ETab, type EGridDisplayMode } from '$enums'
+import { antNotification } from '$modules/antd'
+import { useInBlacklist } from '$modules/bilibili/me/relations/blacklist'
+import { useInFilterByAuthorList } from '$modules/filter/block-state'
+import { checkIsNormalVideo, KNOWN_GOTO, normalizeCardData, type IVideoCardData } from '$modules/filter/normalize'
+import { IconForCopy } from '$modules/icon'
+import { useMultiSelectState } from '$modules/multi-select/store'
+import { SpaceUploadItemHelper } from '$modules/rec-services/space-upload/api/helper'
+import { buildSpaceUploadVideoCardUrl, spaceUploadStore } from '$modules/rec-services/space-upload/store'
+import { useWatchlaterState } from '$modules/rec-services/watchlater'
+import { buildWatchlaterVideoCardUrl } from '$modules/rec-services/watchlater/helper'
+import { settings, useSettingsSnapshot } from '$modules/settings'
+import { TagRecDiscoveryCardActions } from '$modules/tag-rec/ui/video-materials'
+import { useTagManageRelated } from '$modules/tag-rec/use/use-tag-manage-related' // [tag-rec]
+import { useTagRecSeen } from '$modules/tag-rec/use/use-tag-rec-seen' // [tag-rec]
+import { isWebApiSuccess } from '$request'
+import { isFirefoxLike } from '$ua'
+import { isClickInAntdOverlay } from '$utility/dom'
+import { videoCardBorderRadiusValue } from '../css-vars'
+import { useLargePreviewRelated } from '../LargePreview/useLargePreview'
+import { ApiTypeBadge, checkIsCardBadgeValid, GeneralCardBadge, LiveBadge, RankNumBadge, VolBadge } from './card-badges'
+import { getActiveCardBorderCss, multiSelectedCss, useBlockedCardCss } from './card-border-css'
+import { BlockedCard, DislikedCard, SkeletonCard } from './child-components/other-type-cards'
+import { SimpleProgressBar } from './child-components/PreviewImage'
+import { VideoCardActionButton, VideoCardActionsClassNames } from './child-components/VideoCardActions'
+import { VideoCardBottom } from './child-components/VideoCardBottom'
+import { showNativeContextMenuWhenAltKeyPressed, useContextMenus } from './context-menus'
+import {
+  clsZWatchedProgressBar,
+  copyContent,
+  defaultVideoCardEmitter,
+  displayAsListCss,
+  type VideoCardEmitter,
+} from './index.shared'
+import { fetchImagePreviewData, isImagePreviewDataValid, type ImagePreviewData } from './services'
+import { StatItemDisplay } from './stat-item'
+import { useDislikeRelated } from './use/useDislikeRelated'
+import { useFavActionButton, useInitFavContext } from './use/useFavRelated'
+import { useInitFollowedStatusContext } from './use/useFollowRelated'
+import { useRemoveHistoryRelated } from './use/useHistoryRelated'
+import { useMultiSelectRelated } from './use/useMultiSelect'
+import { getRecItemDimension, useLinkTarget, useOpenRelated } from './use/useOpenRelated'
+import { usePreviewRelated } from './use/usePreviewRelated'
+import { useWatchlaterRelated } from './use/useWatchlaterRelated'
+import type { CssProp } from '$utility/type'
+
+export type VideoCardProps = {
+  style?: CSSProperties
+  className?: string
+  loading?: boolean
+  active?: boolean // 键盘 active
+  item?: RecItemType
+  onRemoveCurrent?: (item: RecItemType, data: IVideoCardData, silent?: boolean) => void | Promise<void>
+  emitter?: VideoCardEmitter
+  recSharedEmitter?: RecSharedEmitter
+  tab: ETab
+  baseCss?: CssProp
+  gridDisplayMode?: EGridDisplayMode
+  multiSelecting?: boolean
+  // [tag-rec] 票 perf-05 首屏白封面: 列表前 N 张视口内封面 eager 加载, 首张 fetchpriority='high'
+  eagerCover?: boolean
+  highPriorityCover?: boolean
+} & ComponentProps<'div'>
+
+export const VideoCard = memo(function VideoCard({
+  style,
+  className,
+  item,
+  loading,
+  active,
+  onRemoveCurrent,
+  emitter,
+  recSharedEmitter,
+  tab,
+  baseCss,
+  gridDisplayMode,
+  multiSelecting,
+  eagerCover, // [tag-rec]
+  highPriorityCover, // [tag-rec]
+  ...restProps
+}: VideoCardProps) {
+  // loading defaults to
+  // `true`   => when item is not provided
+  // `false`  => when item provided
+  loading = loading ?? !item
+  const cardData = useMemo(() => item && normalizeCardData(item), [item])
+  const tagRecSeenRef = useTagRecSeen(item, tab) // [tag-rec] 已看标记 (≥50% 进视口, 仅 tag-rec 两 tab)
+
+  // state
+  const dislikeKey = useMemo(() => (item ? calcRecItemDislikedMapKey(item) : undefined), [item])
+  const dislikedReason = useDislikedReason(dislikeKey)
+  const blacklisted = useInBlacklist(cardData?.authorMid)
+  const blocked = useInFilterByAuthorList(cardData?.authorMid)
+  const watchlaterAdded = useWatchlaterState(cardData?.bvid)
+  const multiSelected = useMultiSelectState(item?.uniqId)
+
+  const showingDislikeCard = !!dislikedReason
+  const showingBlacklistCard = blacklisted
+  const showingBlockedCard = blocked
+  const isBlockedCard = showingDislikeCard || showingBlacklistCard || showingBlockedCard
+  const blockedCardCss = useBlockedCardCss(isBlockedCard)
+
+  const _className = clsx('bili-video-card', APP_CLS_CARD, { [APP_CLS_CARD_ACTIVE]: active }, 'relative', className)
+  const _css = [
+    baseCss,
+    // [tag-rec] AUDIT-05: active 边样式收进组件内 —— RecGrid 若传 `[cardBorderCss, getActiveCardBorderCss(active)]`
+    //   数组字面量每轮新引用会击穿 memo 浅比较; active 本卡已持 prop, 内部求值即可 (顺序保持在 baseCss 之后)
+    getActiveCardBorderCss(!!active),
+    blockedCardCss,
+    isDisplayAsList(gridDisplayMode) && displayAsListCss.card,
+    multiSelecting && multiSelected && multiSelectedCss,
+  ]
+
+  return (
+    <div
+      data-bvid={cardData?.bvid}
+      style={style}
+      className={_className}
+      css={_css}
+      {...restProps}
+      ref={tagRecSeenRef} // [tag-rec]
+    >
+      {loading ? (
+        <SkeletonCard loading={loading} />
+      ) : (
+        item &&
+        cardData &&
+        (showingDislikeCard ? (
+          <DislikedCard item={item} cardData={cardData} emitter={emitter} dislikedReason={dislikedReason!} />
+        ) : showingBlacklistCard ? (
+          <BlockedCard item={item} cardData={cardData} blockType='blacklist' />
+        ) : showingBlockedCard ? (
+          <BlockedCard item={item} cardData={cardData} blockType='filter' />
+        ) : (
+          <VideoCardInner
+            item={item}
+            cardData={cardData}
+            active={active}
+            emitter={emitter}
+            recSharedEmitter={recSharedEmitter}
+            tab={tab}
+            onRemoveCurrent={onRemoveCurrent}
+            watchlaterAdded={watchlaterAdded}
+            gridDisplayMode={gridDisplayMode}
+            multiSelecting={multiSelecting}
+            multiSelected={multiSelected}
+            eagerCover={eagerCover} // [tag-rec]
+            highPriorityCover={highPriorityCover} // [tag-rec]
+          />
+        ))
+      )}
+    </div>
+  )
+})
+
+export type VideoCardInnerProps = {
+  item: RecItemType
+  cardData: IVideoCardData
+  active?: boolean
+  onRemoveCurrent?: (item: RecItemType, data: IVideoCardData, silent?: boolean) => void | Promise<void>
+  emitter?: VideoCardEmitter
+  recSharedEmitter?: RecSharedEmitter
+  watchlaterAdded: boolean
+  tab: ETab
+  gridDisplayMode?: EGridDisplayMode
+  multiSelecting?: boolean
+  multiSelected: boolean
+  eagerCover?: boolean // [tag-rec]
+  highPriorityCover?: boolean // [tag-rec]
+}
+/** [tag-rec] 左上角角标通用样式 (未核实/回放等 marks 行共用) */
+const tagRecMarkBadge = (background: string, title: string, text: string) => (
+  <span
+    style={{
+      padding: '1px 6px',
+      fontSize: 11,
+      lineHeight: '16px',
+      background,
+      color: '#fff',
+      borderRadius: 4,
+    }}
+    title={title}
+  >
+    {text}
+  </span>
+)
+
+const VideoCardInner = memo(function VideoCardInner({
+  item,
+  cardData,
+  tab,
+  active = false,
+  onRemoveCurrent,
+  emitter = defaultVideoCardEmitter,
+  recSharedEmitter = defaultRecSharedEmitter,
+  watchlaterAdded,
+  gridDisplayMode,
+  multiSelecting = false,
+  multiSelected,
+  eagerCover, // [tag-rec]
+  highPriorityCover, // [tag-rec]
+}: VideoCardInnerProps) {
+  // snapshot
+  const {
+    accessKey,
+    style: {
+      videoCard: { useBorder: cardUseBorder, useBorderOnlyOnHover: cardUseBorderOnlyOnHover },
+    },
+    videoCard: {
+      actions: videoCardActions,
+      imgPreview: { enabled: imgPreviewEnabled, autoPreviewWhenHover, disableWhenMultiSelecting },
+    },
+    spaceUpload: spaceUploadSettings,
+    watchlater: watchlaterSettings,
+    __internalEnableCopyBvidInfo,
+  } = useSettingsSnapshot()
+  const {
+    // video
+    avid,
+    bvid,
+    cid,
+    goto,
+    href: _hrefFromNormalize,
+    title,
+    cover,
+    duration,
+    durationDisplay,
+    watchedProgress,
+
+    // stat
+    statItems,
+
+    // author
+    authorMid,
+  } = cardData
+
+  const authed = !!accessKey
+  const isNormalVideo = checkIsNormalVideo(goto)
+  if (!KNOWN_GOTO.includes(goto)) {
+    appWarn(`none (${KNOWN_GOTO.join(',')}) goto type %s`, goto, item)
+  }
+
+  // dynamic href
+  const { usingOrder: spaceUploadItemsOrder, isDisplayingSingleUpAllItems: spaceUploadIsDisplayingSingleUpAllItems } =
+    useSnapshot(spaceUploadStore)
+  const href = useMemo(() => {
+    if (checkIsWatchlater(item) && item.bvid) {
+      return buildWatchlaterVideoCardUrl(item.bvid, item.aid, watchlaterSettings)
+    }
+    if (checkIsSpaceUpload(item) && authorMid && item.bvid) {
+      return buildSpaceUploadVideoCardUrl(authorMid, item.bvid, item.aid, {
+        continuePlay: spaceUploadSettings.continuePlay,
+        continuePlayDirection: spaceUploadSettings.continuePlayDirection,
+        useCollectionUrl: spaceUploadSettings.useCollectionUrl,
+        collectionId: SpaceUploadItemHelper.checkIsCollection(item) ? item.season_id.toString() : undefined,
+        itemsOrder: spaceUploadItemsOrder,
+        isDisplayingSingleUpAllItems: spaceUploadIsDisplayingSingleUpAllItems,
+      })
+    }
+    return _hrefFromNormalize
+  }, [
+    item,
+    authorMid,
+    _hrefFromNormalize,
+    watchlaterSettings.itemsOrder,
+    watchlaterSettings.continuePlay,
+    watchlaterSettings.continuePlayDirection,
+    spaceUploadSettings.continuePlay,
+    spaceUploadSettings.continuePlayDirection,
+    spaceUploadItemsOrder,
+    spaceUploadIsDisplayingSingleUpAllItems,
+  ])
+
+  const displayingAsList = isDisplayAsList(gridDisplayMode)
+  const aspectRatioFromItem = useMemo(() => getRecItemDimension({ item })?.aspectRatio, [item])
+
+  // shared by video-preview & image-preview
+  const shouldFetchPreviewData = useMemo(() => {
+    if (!bvid) return false // no bvid
+    if (!bvid.startsWith('BV')) return false // bvid invalid
+    if (goto !== 'av') return false // only for video
+    return true
+  }, [bvid, goto])
+
+  const showPreviewImageEl = (() => {
+    if (!imgPreviewEnabled) return false
+    if (disableWhenMultiSelecting && multiSelecting) return false
+    return true
+  })()
+
+  const imagePreviewDataBox = useRefStateBox<ImagePreviewData | undefined>(undefined)
+  const tryFetchImagePreviewData = useLockFn(async () => {
+    if (!bvid) return
+    if (!shouldFetchPreviewData) return
+    if (!showPreviewImageEl) return
+    if (isImagePreviewDataValid(imagePreviewDataBox.val)) return // already fetched
+    const data = await fetchImagePreviewData(bvid)
+    imagePreviewDataBox.set(data)
+    if (!isWebApiSuccess(data.videoshotJson)) {
+      warnNoPreview(data.videoshotJson!)
+    }
+  })
+
+  // 3,false: 每三次触发一次
+  const warnNoPreview = useLessFrequentFn(
+    (json: PvideoJson) => {
+      antNotification.warning({
+        title: `${json.message} (code: ${json.code})`,
+        description: `${title} (${bvid})`,
+        duration: 2,
+      })
+    },
+    3,
+    false,
+  )
+
+  /**
+   * 预览 hover state
+   */
+
+  // single ref 与 useEventListener 配合不是很好, 故使用两个 ref
+  const cardRef = useRef<ComponentRef<'div'>>(null)
+  const coverRef = useRef<ComponentRef<'a'>>(null)
+  const videoPreviewWrapperRef = cardUseBorder && !displayingAsList ? cardRef : coverRef
+
+  const {
+    onStartPreviewAnimation,
+    onHotkeyPreviewAnimation,
+    // flag
+    isHovering,
+    // el
+    previewImageEl,
+  } = usePreviewRelated({
+    uniqId: item.uniqId,
+    recSharedEmitter,
+    title,
+    active,
+    videoDuration: duration,
+    tryFetchImagePreviewData,
+    imagePreviewDataBox,
+    autoPreviewWhenHover,
+    videoPreviewWrapperRef,
+  })
+
+  useUpdateEffect(() => {
+    if (!active) return
+
+    // update global item data for debug
+    setGlobalValue(`${APP_KEY_PREFIX}_activeItem`, item)
+    setGlobalValue(`${APP_KEY_PREFIX}_activeCardData`, cardData)
+
+    // 自动开始预览
+    if (settings.videoCard.imgPreview.autoPreviewWhenKeyboardSelect) {
+      tryFetchImagePreviewData().then(() => {
+        onStartPreviewAnimation(false)
+      })
+    }
+  }, [active])
+
+  const actionButtonVisible = active || isHovering
+
+  // 稍候再看
+  const { watchlaterButtonEl, context: watchlaterContext } = useWatchlaterRelated({
+    item,
+    cardData,
+    onRemoveCurrent,
+    actionButtonVisible,
+    watchlaterAdded,
+  })
+
+  // 不喜欢
+  const { dislikeButtonEl, hasDislikeEntry, onTriggerDislike } = useDislikeRelated({
+    item,
+    authed,
+    actionButtonVisible,
+  })
+
+  // 浮动预览
+  const {
+    largePreviewActionButtonEl,
+    largePreviewEl,
+    shouldUseLargePreviewCurrentTime,
+    getLargePreviewCurrentTime,
+    largePreviewVisible,
+    hideLargePreview,
+  } = useLargePreviewRelated({
+    shouldFetchPreviewData,
+    actionButtonVisible,
+    hasLargePreviewActionButton: videoCardActions.showLargePreview,
+    // required
+    bvid: bvid!,
+    cid,
+    uniqId: item.uniqId,
+    recSharedEmitter,
+    cardTarget: cardRef,
+    // optional
+    aspectRatioFromItem,
+    cover,
+    videoCardAsTriggerRef: videoPreviewWrapperRef, // use cardRef | coverRef
+    videoTitle: title,
+  })
+
+  // fav
+  const favContext = useInitFavContext(item, avid, emitter)
+
+  // followed
+  const followedStatusContext = useInitFollowedStatusContext(item, cardData, emitter)
+  const { followed } = followedStatusContext
+
+  // 打开视频卡片
+  const {
+    onOpenWithMode,
+    handleVideoLinkClick,
+    consistentOpenMenus,
+    conditionalOpenMenus,
+    openInPopupActionButtonEl,
+    onOpenInPopup,
+  } = useOpenRelated({
+    href,
+    item,
+    cardData,
+    actionButtonVisible,
+    hasOpenInPopupActionButton: videoCardActions.openInPipWindow,
+    getLargePreviewCurrentTime,
+    hideLargePreview,
+    shouldUseLargePreviewCurrentTime,
+  })
+
+  // 多选
+  const { multiSelectBgEl, multiSelectEl, toggleMultiSelect } = useMultiSelectRelated({
+    multiSelecting,
+    multiSelected,
+    uniqId: item.uniqId,
+  })
+
+  const handleCardClick: MouseEventHandler<HTMLDivElement> = useMemoizedFn((e) => {
+    if (!cardUseBorder) return
+
+    // [tag-rec] click from antd overlay portal (dropdown menu / modal / popover): React 合成事件沿组件树冒泡, portal 内点击会带到这里
+    if (isClickInAntdOverlay(e.target)) return
+
+    // already handled by <a>
+    if ((e.target as HTMLElement).closest('a')) return
+
+    onOpenWithMode()
+  })
+
+  /**
+   * expose actions
+   */
+
+  useEmitterOn(emitter, 'open', () => onOpenWithMode())
+  useEmitterOn(emitter, 'open-in-popup', onOpenInPopup)
+  useEmitterOn(emitter, 'open-with-large-preview-visible', () => {
+    if (!largePreviewVisible) return
+    hideLargePreview()
+    onOpenWithMode()
+  })
+  useEmitterOn(emitter, 'toggle-watch-later', () => void watchlaterContext.handleToggleWatchlater())
+  useEmitterOn(emitter, 'trigger-dislike', () => void onTriggerDislike())
+  useEmitterOn(emitter, 'start-preview-animation', onStartPreviewAnimation)
+  useEmitterOn(emitter, 'hotkey-preview-animation', onHotkeyPreviewAnimation)
+
+  // [tag-rec] 标签管理入口 (🏷 弹层按钮 + 右键菜单项); item 供 tab2 右键改道取条件抽屉,
+  //   tagManageModalEl 须挂在按钮位替换之外 (tab2 上 🏷 弹层按钮被取词/理由顶替, Modal 不再随之消失)
+  const { tagManageActionButtonEl, tagManageModalEl, tagRecMenus } = useTagManageRelated({
+    cardData,
+    actionButtonVisible,
+    tab,
+    item,
+  })
+
+  /**
+   * context menu
+   */
+  const contextMenus = useContextMenus({
+    item,
+    cardData,
+    tab,
+    isNormalVideo,
+    watchlaterContext,
+    favContext,
+    followed,
+    hasDislikeEntry,
+    onTriggerDislike,
+    onRemoveCurrent,
+    consistentOpenMenus,
+    conditionalOpenMenus,
+    multiSelecting,
+    tagRecMenus, // [tag-rec]
+  })
+  const onContextMenuOpenChange = useMemoizedFn((open: boolean) => {
+    if (!open) return
+    // [tag-rec] AUDIT-04 同款: 异步 listener (如 updateFavFolderNames) reject 会令 emit() 聚合抛出
+    //   AggregateError -> 裸 emit 产 unhandled rejection; 就地 catch 上报
+    void emitter.emit('context-menu-open').catch((e) => appError('VideoCard context-menu-open error', e))
+  })
+
+  /**
+   * top marks
+   */
+  const hasGeneralCardBadges = !!cardData.cardBadges?.some(checkIsCardBadgeValid)
+  const isRank = checkIsRank(item)
+  const isStreaming = // 直播中
+    ((checkIsLive(item) || checkIsHistory(item)) && item.live_status === ELiveStatus.Streaming) ||
+    (checkIsPcRecommend(item) && item.goto === PcRecGoto.Live)
+  const hasApiTypeBadge = tab === ETab.AppRecommend && !checkIsAppRecommend(item) && !checkIsLive(item)
+  const hasVolMark =
+    (checkIsSpaceUpload(item) && spaceUploadSettings.showVol) || (checkIsFav(item) && !!item.vol && !hasApiTypeBadge)
+
+  const copyBvidInfoButtonEl = __internalEnableCopyBvidInfo && bvid && (
+    <VideoCardActionButton
+      visible={actionButtonVisible}
+      inlinePosition='right'
+      icon={<IconForCopy className='size-14px' />}
+      tooltip={'复制 BVID 信息'}
+      onClick={(e) => {
+        e.stopPropagation()
+        e.preventDefault()
+        copyContent(getBvidInfo(cardData))
+      }}
+    />
+  )
+
+  const topLeftMarksEl = (
+    <>
+      {/* 多选 */}
+      {multiSelecting && multiSelectEl}
+
+      {/* [tag-rec] 临时查看: 未核实/回放角标与来源徽标同处左上角, 排进 marks 行避免重叠 */}
+      {item.api === EApiType.TagRec &&
+        item.combinationUnverified &&
+        tagRecMarkBadge('rgba(173, 104, 0, 0.9)', '你正在临时查看：这条视频尚未确认符合组合条件', '未核实')}
+
+      {/* [tag-rec] 票 006: 回放角标 —— 本地回放池零请求复用的内容, 不冒充新推荐 */}
+      {item.api === EApiType.TagRec &&
+        item.tagRecReplayed &&
+        tagRecMarkBadge('rgba(90, 90, 90, 0.85)', '这条是本地回放：该条件之前交付过的内容，零请求复用', '回放')}
+
+      {/* 热门: 排行榜 */}
+      {isRank && <RankNumBadge item={item} />}
+
+      {/* 直播: 直播中 */}
+      {isStreaming && <LiveBadge />}
+
+      {/* App推荐: 来自其他 Tab 的内容 */}
+      {hasApiTypeBadge && <ApiTypeBadge item={item} />}
+
+      {/* 显示序号, Tab: 投稿 | 收藏 */}
+      {hasVolMark && !!item.vol && (
+        <VolBadge vol={item.vol} volTooltip={checkIsFav(item) ? item.volTooltip : undefined} />
+      )}
+
+      {/* general badges */}
+      {/* 动态: 充电专属; 投稿: 充电专属;  */}
+      {hasGeneralCardBadges && cardData.cardBadges?.map((tag) => <GeneralCardBadge key={tag.key} tag={tag} />)}
+
+      {/* 我不想看 */}
+      {dislikeButtonEl}
+    </>
+  )
+
+  const { removeHistoryActionButton } = useRemoveHistoryRelated({
+    item,
+    cardData,
+    actionButtonVisible,
+    onRemoveCurrent,
+  })
+
+  const { favStateActionButton } = useFavActionButton({
+    item,
+    cardData,
+    ctx: favContext,
+    actionButtonVisible,
+  })
+
+  const topRightActionsEl = (
+    <>
+      {/* 历史: 移除历史记录 */}
+      {removeHistoryActionButton}
+
+      {/* 收藏: 取消收藏 */}
+      {/* !TODO: */}
+
+      {/* 稍后再看 */}
+      {watchlaterButtonEl}
+
+      {/* 稍后再看: 收藏 */}
+      {favStateActionButton}
+
+      {/* [tag-rec] 标签弹层 */}
+      {tab === ETab.TagRecCustom && item.api === EApiType.TagRec ? (
+        <TagRecDiscoveryCardActions item={item} visible={actionButtonVisible} />
+      ) : (
+        tagManageActionButtonEl
+      )}
+
+      {/* 复制 bvid */}
+      {copyBvidInfoButtonEl}
+
+      {/* 小窗打开 */}
+      {openInPopupActionButtonEl}
+
+      {/* 浮动预览 */}
+      {largePreviewActionButtonEl}
+    </>
+  )
+
+  const hasTopLeftMarks = !isEmptyFragment(topLeftMarksEl)
+  const hasTopRightActions = !isEmptyFragment(topRightActionsEl)
+  const clsTopLeftMarksContainer = useUnoMerge(
+    'left-top-marks',
+    VideoCardActionsClassNames.topContainer('left'),
+    multiSelecting && 'gap-x-10px',
+  )
+
+  const watchedProgressBar = !!watchedProgress && (
+    <SimpleProgressBar progress={watchedProgress} className={clsx('h-3px', clsZWatchedProgressBar)} />
+  )
+
+  // 一堆 selector 增加权重
+  const clsVideoCardPrefix = `.${APP_CLS_ROOT} .${APP_CLS_CARD}`
+
+  // 封面圆角
+  const coverRoundCss: CssProp = useMemo(() => {
+    return [
+      css`
+        ${clsVideoCardPrefix} & {
+          overflow: hidden;
+          border-radius: ${videoCardBorderRadiusValue};
+          transition: border-radius 0.2s ease;
+        }
+      `,
+      !displayingAsList && [
+        // 常驻: 下边界不显示圆角
+        (active || multiSelecting || (cardUseBorder && !cardUseBorderOnlyOnHover)) &&
+          css`
+            ${clsVideoCardPrefix} & {
+              border-bottom-left-radius: 0;
+              border-bottom-right-radius: 0;
+            }
+          `,
+
+        // hover variant: 不显示圆角
+        cardUseBorder &&
+          css`
+            ${clsVideoCardPrefix}:hover & {
+              border-bottom-left-radius: 0;
+              border-bottom-right-radius: 0;
+            }
+          `,
+      ],
+    ]
+  }, [displayingAsList, active, multiSelecting, cardUseBorder, cardUseBorderOnlyOnHover])
+
+  // 防止看不清封面边界: (封面与背景色接近)
+  const shouldMakeCoverClear = useMemo(() => {
+    // case: no-need, card has border always showing, so cover does not need
+    if (cardUseBorder && !cardUseBorderOnlyOnHover) return false
+    if (multiSelecting) return false
+    return !cardUseBorder || (cardUseBorder && cardUseBorderOnlyOnHover && !isHovering)
+  }, [cardUseBorder, cardUseBorderOnlyOnHover, isHovering, multiSelecting])
+
+  const target = useLinkTarget()
+  const coverContent = (
+    <a
+      ref={coverRef}
+      href={href}
+      target={target}
+      // display: block; /* firefox need this */
+      className={clsx(
+        APP_CLS_CARD_COVER,
+        'relative isolate block aspect-16/9 w-100% overflow-hidden',
+        shouldMakeCoverClear && 'ring-1px ring-gate-border',
+      )}
+      css={[coverRoundCss, displayingAsList && displayAsListCss.cover]}
+      onClick={handleVideoLinkClick}
+      onContextMenu={(e) => {
+        const handled = showNativeContextMenuWhenAltKeyPressed(e)
+        if (handled) return
+        // try to solve https://github.com/magicdawn/Bilibili-Gate/issues/92
+        // can't reproduce on macOS
+        e.preventDefault()
+      }}
+    >
+      {/* main-content: image or text */}
+      {/* bilibili.com 默认卡片结构 .bili-video-card__image > .bili-video-card__image--wrap > .bili-video-card__cover */}
+      {/* 一堆自认没啥用的结构, 这里不用了! 留下为了查找兼容性问题 */}
+      {/* .bili-video-card__cover 包含 `absolute inset-0 size-full z-1 overflow-hidden object-cover` 等属性 */}
+      {cover ? (
+        <Picture
+          src={`${cover}@672w_378h_1c_!web-home-common-cover`}
+          className='bili-video-card__cover size-full'
+          eager={eagerCover} // [tag-rec]
+          imgProps={{
+            alt: isFirefoxLike ? undefined : title, // firefox shows alt during imgload
+            fetchPriority: highPriorityCover ? 'high' : undefined, // [tag-rec] 票 perf-05: 首张=LCP 候选
+          }}
+          style={{ borderRadius: 0 }}
+        />
+      ) : (
+        <div className='size-full flex-center px-4 py-2'>
+          <div className='line-clamp-3 text-center text-1.2em color-gate-text line-height-snug hover:color-gate-primary'>
+            {title}
+          </div>
+        </div>
+      )}
+
+      <div
+        className='bili-video-card__stats'
+        css={css`
+          ${clsVideoCardPrefix} & {
+            pointer-events: none;
+            border-radius: 0;
+          }
+        `}
+      >
+        {/* 左下角: 统计 */}
+        <div className='bili-video-card__stats--left gap-x-4px xl:gap-x-8px'>
+          {statItems.map(({ field, value }) => (
+            <StatItemDisplay key={field} field={field} value={value} />
+          ))}
+        </div>
+        {/* 右下角: 时长 */}
+        {durationDisplay && (
+          <span className='bili-video-card__stats__duration relative top-0.5px'>{durationDisplay}</span>
+        )}
+      </div>
+
+      {watchedProgressBar}
+      {showPreviewImageEl && previewImageEl}
+      {multiSelectBgEl}
+
+      {/* left-marks */}
+      {hasTopLeftMarks && <div className={clsTopLeftMarksContainer}>{topLeftMarksEl}</div>}
+
+      {/* right-actions */}
+      {hasTopRightActions && (
+        <div className={clsx('right-actions', VideoCardActionsClassNames.topContainer('right'))}>
+          {topRightActionsEl}
+        </div>
+      )}
+
+      {/* [tag-rec] 关键词筛选 Modal —— 常驻挂载, 不随右上角按钮位替换而消失 */}
+      {tagManageModalEl}
+    </a>
+  )
+
+  /* bottom: cover-bottom or cover-right(list mode) */
+  const bottomContent = (
+    <VideoCardBottom
+      item={item}
+      cardData={cardData}
+      gridDisplayMode={gridDisplayMode}
+      followed={followed}
+      handleVideoLinkClick={multiSelecting ? toggleMultiSelect : handleVideoLinkClick}
+    />
+  )
+
+  const extraContent = <>{largePreviewEl}</>
+
+  function wrapDropdown(c: ReactNode) {
+    return (
+      <Dropdown
+        trigger={['contextMenu']}
+        onOpenChange={onContextMenuOpenChange}
+        getPopupContainer={() => {
+          return cardRef.current?.closest<HTMLElement>(`.${APP_CLS_CARD}`) ?? document.body
+        }}
+        rootClassName={clsx(clsZVideoCardContextMenu, clsGateVideoCardContextMenuRoot)}
+        menu={{
+          items: contextMenus,
+          className: 'w-max', // 需要设置宽度, 否则闪屏
+        }}
+      >
+        {c}
+      </Dropdown>
+    )
+  }
+
+  function wrapCardWrapper(c: ReactNode) {
+    return (
+      <div
+        className='bili-video-card__wrap'
+        ref={cardRef}
+        css={[
+          css`
+            background-color: unset;
+            position: static;
+            height: 100%;
+          `,
+          displayingAsList && displayAsListCss.cardWrap,
+        ]}
+        onClick={multiSelecting ? toggleMultiSelect : handleCardClick}
+        onContextMenu={(e) => {
+          if (cardUseBorder) {
+            e.preventDefault()
+          }
+        }}
+      >
+        {c}
+      </div>
+    )
+  }
+
+  const wrappedContent: ReactNode =
+    cardUseBorder && !displayingAsList
+      ? wrapDropdown(
+          wrapCardWrapper(
+            <>
+              {coverContent}
+              {bottomContent}
+            </>,
+          ),
+        )
+      : wrapCardWrapper(
+          <>
+            {wrapDropdown(coverContent)}
+            {bottomContent}
+          </>,
+        )
+
+  return (
+    <>
+      {wrappedContent}
+      {extraContent}
+    </>
+  )
+})

@@ -1,0 +1,85 @@
+//
+// 修改此文件注意同步修改 uno.config.ts shortcuts
+// all id with `app-` prefix means it's scoped
+// `--` 表示层级
+//
+
+@use 'sass:string';
+
+$app-name: bilibili-gate;
+
+// cls
+$app-cls-root: #{$app-name}-root;
+$app-cls-dark: #{$app-name}-using-dark;
+$app-cls-light: #{$app-name}-using-light;
+$app-cls-dark-selector: 'html.#{$app-cls-dark}';
+$app-cls-light-selector: 'html.#{$app-cls-light}';
+
+// color
+$bili-pink: #ff6699;
+
+//
+// app general
+//
+$app-primary-color-id: --#{$app-name}--primary-color;
+$app-border-color-id: --#{$app-name}--border-color;
+$app-bg-id: --#{$app-name}--bg;
+$app-text-color-id: --#{$app-name}--text-color;
+// evevated
+$app-primary-color-lv1-id: --#{$app-name}--primary-color--lv1;
+$app-primary-color-lv2-id: --#{$app-name}--primary-color--lv2;
+$app-primary-color-lv3-id: --#{$app-name}--primary-color--lv3;
+$app-bg-lv1-id: --#{$app-name}--bg--lv1;
+$app-bg-lv2-id: --#{$app-name}--bg--lv2;
+$app-bg-lv3-id: --#{$app-name}--bg--lv3;
+
+//
+// font
+//
+// bilibili.com default: PingFang SC,HarmonyOS_Regular,Helvetica Neue,Microsoft YaHei,sans-serif
+// HarmonyOS_Regular 使用的是 web font
+//
+// 由于 B站 默认 css, 加上了 !important, 这里如果需要自定义也需要加上
+// 优先使用 Bilibili-Evolved 的自定义字体
+$app-custom-font-id: --#{$app-name}--font;
+$app-custom-font-value:
+  'Alibaba PuHuiTi 3.0', 'PingFang SC', 'HarmonyOS_Regular', 'Helvetica Neue', 'Microsoft YaHei', sans-serif;
+$app-using-font: var(--custom-font-family--options--font-family, var(#{$app-custom-font-id})) !important;
+
+// video card
+$app-video-card-border-radius-id: --#{$app-name}--video-card--border-radius;
+
+//
+// exports
+//
+$use-export: false !default;
+@if $use-export {
+  :export {
+    // ids
+    app-custom-font-id: $app-custom-font-id;
+    app-video-card-border-radius-id: $app-video-card-border-radius-id;
+
+    // colors
+    app-primary-color-id: $app-primary-color-id;
+    app-border-color-id: $app-border-color-id;
+    app-text-color-id: $app-text-color-id;
+    app-bg-id: $app-bg-id;
+    app-primary-color-lv1-id: $app-primary-color-lv1-id;
+    app-primary-color-lv2-id: $app-primary-color-lv2-id;
+    app-primary-color-lv3-id: $app-primary-color-lv3-id;
+    app-bg-lv1-id: $app-bg-lv1-id;
+    app-bg-lv2-id: $app-bg-lv2-id;
+    app-bg-lv3-id: $app-bg-lv3-id;
+
+    // values
+    bili-pink: $bili-pink;
+    app-custom-font-value: $app-custom-font-value;
+    app-using-font: $app-using-font;
+
+    app-cls-root: $app-cls-root;
+    app-cls-dark: $app-cls-dark;
+    app-cls-light: $app-cls-light;
+    app-cls-dark-selector: #{string.unquote($app-cls-dark-selector)};
+    app-cls-light-selector: #{string.unquote($app-cls-light-selector)};
+  }
+}

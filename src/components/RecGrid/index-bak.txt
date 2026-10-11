@@ -1,0 +1,122 @@
+virtuoso
+// virtual grid
+if (ENABLE_VIRTUAL_GRID) {
+  return (
+    <div className={clsx(gridClassNames.videoGridContainer, gridClassNames.virtualGridEnabled)}>
+      <VirtuosoGrid
+        useWindowScroll
+        data={fullList}
+        overscan={{ main: 20, reverse: 20 }}
+        listClassName={gridStyleConfig.className}
+        computeItemKey={(index, item) => item.uniqId}
+        components={gridComponents as CustomGridComponents} // 因为我改了 context required
+        context={virtuosoGridContext}
+        itemContent={(index, item) => renderItem(item)}
+        endReached={() => checkShouldLoadMore()}
+      />
+      {!gridComponents.Footer && footer}
+    </div>
+  )
+}
+
+const virtuosoGridContext: CustomGridContext = useMemo(() => {
+  return {
+    footerContent: footer,
+    gridRef,
+    gridClassName: gridStyleConfig.className,
+  }
+}, [footer, gridRef, gridStyleConfig.className])
+
+
+
+---------------
+
+"react-infinite-scroller": "^1.2.6",
+"@types/react-infinite-scroller": "^1.2.3",
+
+import InfiniteScroll from 'react-infinite-scroller'
+
+<InfiniteScroll
+pageStart={0}
+hasMore={hasMore}
+loadMore={loadMore}
+initialLoad={false}
+useWindow={infiteScrollUseWindow}
+threshold={window.innerHeight * 1} // 一屏
+style={{ minHeight: '100%' }}
+>
+</InfiniteScroll>
+
+
+// virtual grid
+// 有个缺点, 开始的时候只显示一个 video-card
+if (ENABLE_VIRTUAL_GRID) {
+  return (
+    <div className={videoGridContainer}>
+      <VirtuosoGrid
+        style={{
+          // at least 1 line
+          minHeight: '300px',
+        }}
+        useWindowScroll
+        data={items}
+        overscan={20}
+        // listClassName={gridClassName}
+        computeItemKey={(index, item) => item.uniqId}
+        components={{
+          List: forwardRef((props, ref) => {
+            return (
+              <div
+                ref={(el) => {
+                  // @ts-ignore
+                  containerRef.current = el
+                  if (ref) {
+                    if (typeof ref === 'function') ref(el)
+                    else ref.current = el
+                  }
+                }}
+                {...props}
+                className={clsx(props.className, gridClassName)}
+              />
+            )
+          }),
+
+          // render footer here cause error
+          // Footer() {
+          //   return <></>
+          // },
+        }}
+        itemContent={(index, item) => {
+          const active = index === activeIndex
+          return (
+            <VideoCard
+              key={item.uniqId}
+              className={clsx(CardClassNames.card, { [CardClassNames.cardActive]: active })}
+              item={item}
+              active={active}
+              onRemoveCurrent={handleRemoveCard}
+              refresh={refresh}
+              emitter={videoCardEmitters[index]}
+            />
+          )
+        }}
+      />
+      {footer}
+    </div>
+  )
+}
+
+
+
+// h slide
+// initial={direction ? { opacity: 0, x: direction === 'right' ? '10vw' : '-10vw' } : false}
+// animate={{ opacity: 1, x: 0 }}
+// transition={{ bounce: false, duration: 0.3 }}
+
+// v slide
+// initial={direction ? { opacity: 0, y: -10 } : false}
+// animate={{ opacity: 1, y: 0 }}
+// transition={{ bounce: false, duration: 0.3 }}
+
+
+

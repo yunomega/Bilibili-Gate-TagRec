@@ -1,0 +1,126 @@
+/* eslint-disable @typescript-eslint/consistent-type-assertions */
+/* oxlint-disable react-hooks/rules-of-hooks */
+
+import { useCreation, useMemoizedFn } from 'ahooks'
+import Emittery from 'emittery'
+import { createContext, useContext, useMemo, type ReactNode } from 'react'
+import { proxy, ref, snapshot, useSnapshot } from 'valtio'
+import { isRecTab, type RecTab, type ServiceMap } from '$modules/rec-services/service-map'
+import type { RingBuffer } from 'ring-buffer-ts'
+import type { ETab } from '$enums'
+import type { AppRecService } from '$modules/rec-services/app'
+import type { PcRecService } from '$modules/rec-services/pc'
+
+/* #region RecSharedEmitter */
+export type RecSharedEmitterEvents = {
+  // for VideoCard, shared
+  'mouseenter': string
+  'show-large-preview': string
+
+  // for grid
+  'refresh': Parameters<RefreshFn>[0]
+  'load-more': undefined // [tag-rec]
+  'tag-rec:continue': undefined // Explicit continuation appends even when the footer is outside the viewport.
+  'load-to-end': undefined
+  'remove-cards': [
+    uniqIds: string[],
+    titles?: string[],
+    messageConfig?: { silent?: boolean; itemsDescription?: string },
+  ]
+  'move-card-to': [uniqId: string, pos: 'start' | 'end']
+
+  // for views: [tabbarView, sidebarView, ...]
+  'dynamic-feed:clear': undefined
+}
+
+export type RecSharedEmitter = Emittery<RecSharedEmitterEvents>
+
+export const defaultRecSharedEmitter = new Emittery<RecSharedEmitterEvents>()
+/* #endregion */
+
+/**
+ * Self is `this` for FC
+ */
+export class RecSelf {
+  constructor(public insideModal?: boolean) {}
+  recSharedEmitter = new Emittery<RecSharedEmitterEvents>()
+  serviceRegistry: Partial<ServiceMap> = {}
+  serviceQueueMap: Partial<Record<RecTab, RingBuffer<AppRecService | PcRecService>>> = {}
+
+  // render state
+  private store = proxy({
+    refreshing: false,
+    refreshingTab: undefined as ETab | undefined,
+    tabbarView: undefined as ReactNode,
+    sidebarView: undefined as ReactNode,
+    serviceQueueStateMap: {} as Partial<Record<RecTab, { len: number; cursor: number }>>,
+  })
+
+  get refreshing() {
+    return this.store.refreshing
+  }
+  get refreshingTab() {
+    return this.store.refreshingTab
+  }
+
+  useStore = () => {
+    return useSnapshot(this.store)
+  }
+  setStore = (payload: Partial<typeof this.store>) => {
+    const wrapRefKeys: (keyof typeof this.store)[] = ['tabbarView', 'sidebarView']
+    for (const key of wrapRefKeys) {
+      const v = payload[key]
+      if (typeof v === 'object' && v !== null) {
+        payload[key] = ref(v) as any
+      }
+    }
+    Object.assign(this.store, payload)
+  }
+
+  useTabServiceQueueState = (tab: ETab) => {
+    return useSnapshot(this.store.serviceQueueStateMap)[tab as RecTab]
+  }
+  getTabServiceQueueState = (tab: ETab) => {
+    return snapshot(this.store.serviceQueueStateMap)[tab as RecTab]
+  }
+  setTabServiceQueueState = (tab: RecTab, state: { len: number; cursor: number }) => {
+    this.store.serviceQueueStateMap[tab] = state
+  }
+
+  private _calcTabBackForwardStatus = (
+    tab: ETab,
+    state: { len: number; cursor: number } | undefined,
+  ): [canGoBack: boolean, canGoForward: boolean] => {
+    if (!isRecTab(tab) || !state || state.len <= 1) return [false, false]
+    const { len, cursor } = state
+    return [cursor > 0, cursor < len - 1]
+  }
+  getTabBackForwardStatus = (tab: ETab) => {
+    return this._calcTabBackForwardStatus(tab, this.getTabServiceQueueState(tab))
+  }
+  useTabBackForwardStatus = (tab: ETab) => {
+    const state = this.useTabServiceQueueState(tab)
+    return useMemo(() => this._calcTabBackForwardStatus(tab, state), [tab, state])
+  }
+}
+
+export const RecSelfContext = createContext(new RecSelf())
+
+export function useInitRecSelf(...args: ConstructorParameters<typeof RecSelf>) {
+  return useCreation(() => new RecSelf(...args), [])
+}
+
+export function useRecSelfContext() {
+  return useContext(RecSelfContext)
+}
+
+export type RefreshType = 'refresh' | 'reuse' | 'back' | 'forward'
+export type RefreshFn = (refreshType?: RefreshType) => void | Promise<void>
+
+/**
+ * return a function to trigger a refresh event
+ */
+export function useOnRefresh() {
+  const { recSharedEmitter } = useRecSelfContext()
+  return useMemoizedFn((refreshType?: RefreshType) => recSharedEmitter.emit('refresh', refreshType))
+}

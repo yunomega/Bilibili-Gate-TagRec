@@ -1,0 +1,47 @@
+name: Bug Report
+description: 报告问题
+title: '[BUG]:'
+labels: [bug]
+
+body:
+  - type: markdown
+    attributes:
+      value: |
+        ## BUG 表单
+
+  - type: textarea
+    attributes:
+      label: 环境
+      description: 软件版本
+      placeholder: |
+        浏览器: (如 Chrome)
+        浏览器版本: (如 113.0.5672.126)
+        脚本管理器及版本: (如 Tampermonkey / 暴力猴 / 脚本猫)
+        TagRec 版本:
+        出问题的入口: (如 标签发掘 / 主题推荐)
+        过滤总开关及预设: (如 已开启 / 淘沙)
+      value: |
+        浏览器: (如 Chrome)
+        浏览器版本: (如 113.0.5672.126)
+        脚本管理器及版本:
+        TagRec 版本:
+        出问题的入口:
+        过滤总开关及预设:
+    validations:
+      required: true
+
+  - type: textarea
+    attributes:
+      label: 问题详细描述
+      description: 复现步骤；截图、日志或导出配置请先移除 Cookie、令牌和个人名单。
+      placeholder: |
+        请先搜索已有 Issues 是否是已知或已解决...
+    validations:
+      required: true
+
+  - type: textarea
+    attributes:
+      label: 预期结果
+      description: 预期结果
+    validations:
+      required: false

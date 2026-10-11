@@ -1,0 +1,222 @@
+import { css } from '@emotion/react'
+import { Empty, Input } from 'antd'
+import clsx from 'clsx'
+import { identity, uniq } from 'es-toolkit'
+import { memo, useEffect, useMemo, useState, type ComponentProps, type ElementType, type ReactNode } from 'react'
+import { useUnoMerge } from 'unocss-merge/react'
+import { antMessage } from '$modules/antd'
+import { AntdTooltip } from '$modules/antd/custom'
+import { getUserNickname } from '$modules/bilibili/user/nickname'
+import { parseUpRepresent } from '$modules/filter/parse'
+import { formatSpaceUrl } from '$modules/rec-services/dynamic-feed/shared'
+import {
+  getNewestValueOfSettingsInnerArray,
+  updateSettingsInnerArray,
+  useSettingsInnerArray,
+  type ListSettingsPath,
+} from '$modules/settings'
+
+const { Search } = Input
+
+export function EditableListSettingItem({
+  configPath,
+  searchProps,
+  disabled,
+  className,
+  inputClassName,
+  listClassName,
+  renderHeader = identity,
+}: {
+  configPath: ListSettingsPath
+  searchProps?: ComponentProps<typeof Search>
+  disabled?: boolean
+  className?: string
+  inputClassName?: string
+  listClassName?: string
+  renderHeader?: (input: ReactNode) => ReactNode
+}) {
+  const rawList = useSettingsInnerArray(configPath)
+  const list = useMemo(() => uniq(rawList).toReversed(), [rawList])
+  const isUpRepresent = ['filter.byAuthor.keywords', 'filter.dfHideOpusMids.keywords'].includes(configPath)
+
+  const input = (
+    <Search
+      className={clsx('my-5px', inputClassName)}
+      enterButton='添加'
+      allowClear
+      disabled={disabled}
+      size='middle'
+      {...searchProps}
+      onSearch={async (val, e) => {
+        if (!val) return
+
+        // exists check
+        const set = new Set(await getNewestValueOfSettingsInnerArray(configPath))
+        if (set.has(val)) {
+          antMessage.warning(`${val} 已存在`)
+          return
+        }
+
+        // add
+        await updateSettingsInnerArray(configPath, { add: [val] })
+
+        // clear: 非受控组件, 有内部状态, 不能简单设置 input.value
+        if (e?.target) {
+          const el = e.target as HTMLElement
+          const clearBtn = el.closest('.ant-input-wrapper')?.querySelector<HTMLElement>('.ant-input-clear-icon')
+          clearBtn?.click()
+        }
+      }}
+    />
+  )
+
+  /* #region list */
+  const hasData = !!list.length
+  const isEmpty = !hasData
+  const _listClassName = useUnoMerge(
+    isEmpty
+      ? 'rounded-lg'
+      : ['max-h-250px flex flex-wrap items-start gap-x-10px gap-y-5px overflow-y-auto pr-10px', listClassName],
+  )
+  const listEl = (
+    <div
+      className={_listClassName}
+      css={
+        disabled &&
+        css`
+          color: var(--ant-color-text-disabled);
+          background-color: var(--ant-color-bg-container-disabled);
+          box-shadow: none;
+          opacity: 1;
+          pointer-events: none;
+          cursor: not-allowed;
+        `
+      }
+    >
+      {isEmpty && (
+        <Empty
+          image={Empty.PRESENTED_IMAGE_SIMPLE}
+          description='空空如也'
+          className='[&.ant-empty-normal]:(my-1 py-5px)'
+        />
+      )}
+      {hasData &&
+        list.map((t) => {
+          return (
+            <TagItemDisplay
+              key={t.toString()} // [tag-rec] ListSettingsPath 新增对象数组(presets 等) => Key 需 string|number
+              tag={t.toString()}
+              TagComponent={isUpRepresent ? UpTagItemDisplay : undefined}
+              onDelete={(tag) => updateSettingsInnerArray(configPath, { remove: [tag] })}
+            />
+          )
+        })}
+    </div>
+  )
+  /* #endregion */
+
+  return (
+    <>
+      {renderHeader(input)}
+      {listEl}
+    </>
+  )
+}
+
+interface TagItemDisplayProps extends Omit<ComponentProps<'div'>, 'children'> {
+  tag: string
+  TagComponent?: ElementType<{ tag: string }>
+  renderTag?: (tag: string) => ReactNode
+  onDelete?: (tag: string) => void
+}
+
+export const TagItemDisplay = memo(function ({
+  tag,
+  renderTag,
+  TagComponent,
+  onDelete,
+  className,
+  ...restProps
+}: TagItemDisplayProps) {
+  const tagEl = useMemo(() => {
+    if (TagComponent) return <TagComponent tag={tag} />
+    renderTag ??= identity
+    return renderTag(tag)
+  }, [TagComponent, renderTag, tag])
+
+  return (
+    <div
+      {...restProps}
+      className={clsx(
+        'relative inline-flex items-center b-1px b-gate-border rounded-5px b-solid px-6px py-2px hover:(b-gate-primary color-gate-primary)',
+        className,
+      )}
+    >
+      {tagEl}
+      <IconParkOutlineCloseSmall
+        className='ml-2px size-16px cursor-pointer text-size-12px'
+        onClick={() => onDelete?.(tag)}
+      />
+    </div>
+  )
+})
+
+const UpTagItemDisplay = memo(function ({ tag }: { tag: string }) {
+  const { mid, remark } = useMemo(() => parseUpRepresent(tag), [tag])
+
+  const [nicknameByMid, setNicknameByMid] = useState<string | undefined>(undefined)
+  useEffect(() => {
+    void (async () => {
+      if (!mid) return
+      const nickname = await getUserNickname(mid)
+      if (nickname) setNicknameByMid(nickname)
+    })()
+  }, [mid])
+
+  const label = mid
+    ? //
+      nicknameByMid || remark || mid
+    : tag
+
+  const tooltip = (
+    <>
+      {!!mid && (
+        <>
+          mid: {mid} <br />
+        </>
+      )}
+      {!!remark && (
+        <>
+          备注: {remark} <br />
+          {remark === nicknameByMid && (
+            <>
+              P.S "备注" 与 "用户昵称" 相同, 是之前的数据, 现在你只需要填写 mid, 会自动获取昵称 <br />
+            </>
+          )}
+        </>
+      )}
+      {!mid && (
+        <>
+          使用用户名过滤: 用户可能改名, 建议使用 mid 过滤 <br />
+        </>
+      )}
+    </>
+  )
+
+  return (
+    <>
+      <AntdTooltip title={tooltip}>
+        <span className={clsx('inline-flex items-center justify-center', mid ? 'cursor-pointer' : 'cursor-[edit]')}>
+          {mid && <IconRadixIconsPerson className='mr-2px size-12px' />}
+          {mid ? (
+            <a href={formatSpaceUrl(mid)} target='_blank' style={{ color: 'inherit' }}>
+              {label}
+            </a>
+          ) : (
+            label
+          )}
+        </span>
+      </AntdTooltip>
+    </>
+  )
+})

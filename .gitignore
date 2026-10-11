@@ -1,0 +1,50 @@
+dist/
+dist-*/
+node_modules/
+.turbo/
+tmp/
+.idea/
+*.less.d.ts
+*.scss.d.ts
+generated/
+
+# vite
+.vite-inspect/
+vite.config.ts.timestamp*
+/stats.html
+/stats.*
+
+# privacy
+src/define/watchlater-full.json
+*.api.json
+
+# play
+/demo/
+api-debug/
+debug-api/
+.scratch/
+_local-*/
+
+# svg icons
+/src/modules/icon/assets/
+.pnpm-store/
+
+# local research scratch, not published
+notes/research/
+scripts/research/
+tools/preset-studio/
+
+# local credentials and generated state
+.env
+.env.*
+!.env.example
+!.env.*.example
+*.pem
+*.key
+*.p12
+*.pfx
+*.log
+*.tsbuildinfo
+playwright/.auth/
+storage-state*.json
+.auth/

@@ -1,0 +1,71 @@
+import { useMemoizedFn, useMount, useUpdateEffect } from 'ahooks'
+import { Divider, type Menu } from 'antd'
+import { useMemo, useRef, type ComponentRef } from 'react'
+import { useSnapshot } from 'valtio/react'
+import { useGridDisplayModeChecker } from '$components/RecGrid/display-mode'
+import { useRecSelfContext } from '$components/Recommends/rec.shared'
+import { EHotSubTab, ETab } from '$enums'
+import { SHOW_DYNAMIC_FEED_ONLY } from '$modules/rec-services/dynamic-feed/store'
+import { SHOW_FAV_TAB_ONLY } from '$modules/rec-services/fav/store'
+import { hotStore } from '$modules/rec-services/hot'
+import { useSettingsSnapshot } from '$modules/settings'
+import type { AntMenuItem } from '$modules/antd'
+
+export const sidebarBottomLine = (
+  <Divider className='[&.ant-divider-horizontal.ant-divider-with-text]:(my-5px text-14px)'>底线</Divider>
+)
+
+export function useSidebarVisible(tab: ETab | undefined): boolean {
+  const { enableSidebar } = useSettingsSnapshot()
+  const { usingTwoColumnMode } = useGridDisplayModeChecker()
+  const hotSubTab = useSnapshot(hotStore).subtab
+  const { insideModal } = useRecSelfContext()
+
+  return useMemo(() => {
+    if (!enableSidebar) return false // main switch
+    if (insideModal && usingTwoColumnMode) return false // disable sidebar in Modal+TwoColumnMode
+
+    // tab specific
+    if (tab === ETab.DynamicFeed) {
+      if (SHOW_DYNAMIC_FEED_ONLY) return false
+      return true
+    }
+    if (tab === ETab.Hot) {
+      return hotSubTab === EHotSubTab.Rank
+    }
+    if (tab === ETab.Fav) {
+      if (SHOW_FAV_TAB_ONLY) return false
+      return true
+    }
+    return false
+  }, [tab, enableSidebar, hotSubTab, insideModal, usingTwoColumnMode])
+}
+
+export function useRevealMenuSelectedKey(menuItems: AntMenuItem[], selectedKey: string) {
+  const menuRef = useRef<ComponentRef<typeof Menu>>(null)
+
+  const revealSelected = useMemoizedFn((key?: string) => {
+    key ||= selectedKey
+    if (!key) return
+    const el = menuRef.current?.menu?.findItem({ key })
+    if (!el) return
+    el.scrollIntoViewIfNeeded ? el.scrollIntoViewIfNeeded() : el.scrollIntoView()
+    return true // mark scroll called
+  })
+
+  /**
+   * Auto reveal on load
+   */
+  const scrollCalled = useRef(false)
+  const checkAndScroll = useMemoizedFn(() => {
+    if (scrollCalled.current) return
+    const called = revealSelected()
+    if (called) {
+      scrollCalled.current = true
+    }
+  })
+  useMount(() => checkAndScroll())
+  useUpdateEffect(() => checkAndScroll(), [menuItems])
+
+  return { menuRef, revealSelected }
+}

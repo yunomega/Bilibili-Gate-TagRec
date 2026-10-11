@@ -1,0 +1,90 @@
+@use '../../common/css-vars' as *;
+
+.video-grid {
+  display: grid;
+  position: relative;
+  width: 100%;
+  grid-gap: 20px 12px;
+  #{$app-video-card-border-radius-id}: 15px;
+}
+
+.grid-template-columns-using-var-col {
+  --col: 4;
+  grid-template-columns: repeat(var(--col), minmax(0, 1fr));
+}
+.grid-template-columns-using-card-min-width {
+  --card-min-width: 320px;
+  grid-template-columns: repeat(auto-fill, minmax(var(--card-min-width), 1fr));
+}
+
+//
+// 中间留空
+//
+// 4: 2 3
+// 5: 3 3
+// 6: 3 4
+.video-grid-addon-center-empty {
+  &::before {
+    content: '';
+    grid-column: 3 / -3;
+    grid-row: 1 / span 9999;
+    grid-auto-flow: dense;
+  }
+}
+
+// bili-feed4: 取自 .battle-feed-area .battle-feed-body
+.video-grid-bili-feed4 {
+  // grid-gap: 60px 20px; // original
+  grid-gap: 20px 20px;
+
+  @media (width < 1400px) {
+    & {
+      --col: 4;
+    }
+  }
+  @media (width >= 1400px) {
+    & {
+      --col: 5;
+    }
+  }
+
+  :global {
+    .ant-divider-horizontal.ant-divider-with-text {
+      margin-bottom: -15px;
+      margin-top: -15px;
+      &:first-of-type {
+        margin-top: 0;
+      }
+    }
+  }
+}
+
+.video-grid-custom {
+  // gap
+  $col-gap: clamp(10px, 1.1cqw, 20px);
+  $row-gap: clamp(15px, 1.2vw, 40px);
+  --row-gap: #{$row-gap};
+  column-gap: $col-gap;
+  row-gap: 0;
+
+  :global {
+    .bili-video-card {
+      margin-bottom: var(--row-gap);
+    }
+
+    .ant-divider-horizontal.ant-divider-with-text {
+      margin-top: calc(10px - var(--row-gap));
+      margin-bottom: 5px;
+      &:first-of-type {
+        margin-top: 0;
+      }
+    }
+  }
+}
+
+//
+// 双列模式
+//
+.narrow-mode {
+  --col: 2 !important;
+}

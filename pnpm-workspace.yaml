@@ -1,0 +1,12 @@
+# overrides:
+# '@magicdawn/eslint-config': 'file:../eslint-config'
+
+allowBuilds:
+  '@parcel/watcher': false
+  esbuild: true
+  oxc-resolver: true
+
+minimumReleaseAge: 1440
+
+minimumReleaseAgeExclude:
+  - '@magicdawn/eslint-config@1.6.15'

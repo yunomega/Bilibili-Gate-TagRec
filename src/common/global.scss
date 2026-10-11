@@ -1,0 +1,125 @@
+@use 'sass:meta';
+@use 'css-vars' as *;
+
+:root {
+  #{$app-custom-font-id}: #{meta.inspect($app-custom-font-value)};
+}
+
+// implement color css variables
+:root {
+  #{$app-primary-color-lv1-id}: oklch(from var($app-primary-color-id) calc(l - 0.04) c h / alpha);
+  #{$app-primary-color-lv2-id}: oklch(from var($app-primary-color-id) calc(l - 0.08) c h / alpha);
+  #{$app-primary-color-lv3-id}: oklch(from var($app-primary-color-id) calc(l - 0.12) c h / alpha);
+
+  // bg related
+  #{$app-border-color-id}: oklch(from var($app-bg-id) calc(l - 0.05) c h / alpha); // #fff -> #eee
+  #{$app-bg-lv1-id}: oklch(from var($app-bg-id) calc(l - 0.04) c h / alpha);
+  #{$app-bg-lv2-id}: oklch(from var($app-bg-id) calc(l - 0.08) c h / alpha);
+  #{$app-bg-lv3-id}: oklch(from var($app-bg-id) calc(l - 0.12) c h / alpha);
+  &.#{$app-cls-dark} {
+    #{$app-border-color-id}: oklch(from var($app-bg-id) calc(l + 0.07) c h / alpha); // #222 -> #333
+    #{$app-bg-lv1-id}: oklch(from var($app-bg-id) calc(l + 0.03) c h / alpha);
+    #{$app-bg-lv2-id}: oklch(from var($app-bg-id) calc(l + 0.08) c h / alpha);
+    #{$app-bg-lv3-id}: oklch(from var($app-bg-id) calc(l + 0.12) c h / alpha);
+  }
+}
+
+.#{$app-cls-root} {
+  font-family: $app-using-font;
+  font-size: 14px;
+  --back-top-right: 24px;
+
+  // why this
+  // button {
+  //   font-size: inherit;
+  // }
+
+  dd,
+  dl,
+  ol,
+  ul {
+    font-size: inherit;
+  }
+  li {
+    list-style: unset;
+  }
+
+  .bili-video-card {
+    .bili-video-card__info--tit:hover, // fix https://github.com/magicdawn/Bilibili-Gate/issues/168
+    a:not(.disable-hover):hover {
+      color: var($app-primary-color-id) !important;
+    }
+  }
+
+  .ant-btn {
+    font-size: 13px;
+  }
+
+  // firefox alt text visible during img loading
+  img:-moz-loading {
+    visibility: hidden;
+  }
+}
+
+@media (max-width: 1440px) {
+  .#{$app-cls-root} {
+    --back-top-right: 16px;
+  }
+}
+
+// fix ant-tooltip a style
+body .ant-tooltip a {
+  color: #1677ff;
+  transition: color 0.3s;
+
+  &:visited {
+    color: #1677ff;
+  }
+  &:hover {
+    color: #69b1ff;
+  }
+  &:active {
+    color: #0958d9;
+  }
+}
+
+body button:where(.ant-switch) {
+  &:focus,
+  &:active {
+    background-color: rgba(0, 0, 0, 0.25);
+    outline: unset;
+  }
+}
+
+//
+// antd tooltip gap
+// https://github.com/ant-design/ant-design/issues/58585
+// https://github.com/ant-design/ant-design/issues/55038
+//
+.ant-tooltip-placement-top .ant-tooltip-arrow,
+.ant-popover-placement-top .ant-popover-arrow {
+  bottom: 1px !important;
+}
+.ant-tooltip-placement-bottom .ant-tooltip-arrow,
+.ant-popover-placement-bottom .ant-popover-arrow {
+  top: 1.5px !important; // 不知为何 1px 不够
+}
+
+/**
+B站自带 css, 影响了 solid button :focus 样式
+body button:focus, body button:active {
+  background-color: transparent;
+  outline: none;
+}
+ */
+body .ant-btn.ant-btn-variant-solid {
+  &:focus,
+  &:active {
+    color: var(--ant-button-primary-color);
+    background: var(--ant-color-primary);
+  }
+}
+
+#slide_ad {
+  display: none !important;
+}

@@ -1,0 +1,195 @@
+import { useRequest } from 'ahooks'
+import { Button, Popconfirm } from 'antd'
+import clsx from 'clsx'
+import { difference, startCase } from 'es-toolkit'
+import { useState, type ReactNode } from 'react'
+import { APP_NAME } from '$common'
+import { buttonOpenCss } from '$common/emotion-css'
+import { CollapsePanel } from '$components/_base/CollapsePanel'
+import { HelpInfo } from '$components/_base/HelpInfo'
+import { CheckboxSettingItem } from '$components/ModalSettings/setting-item'
+import { handleManualRefreshRelationsCache } from '$main/homepage/init-relations'
+import { antMessage } from '$modules/antd'
+import { AntdTooltip } from '$modules/antd/custom'
+import { IconForCloudStorage, IconForConfig, IconForOpenExternalLink, IconForReload } from '$modules/icon'
+import {
+  allowedLeafSettingsPaths,
+  internalBooleanPaths,
+  pickSettings,
+  resetSettings,
+  runSettingsMigration,
+  updateSettings,
+  type BooleanSettingsPath,
+} from '$modules/settings'
+import { exportSettings, importSettings } from '$modules/settings/file-backup'
+import { articleDraft, restoreOmitPaths } from '$modules/settings/index.shared'
+import { set_HAS_RESTORED_SETTINGS } from '$modules/settings/restore-flag'
+import { toastAndReload } from '../index.shared'
+import { ResetPartialSettingsButton, SettingsGroup, sharedClassNames } from './shared'
+
+function onResetSettings() {
+  resetSettings()
+  return toastAndReload()
+}
+
+async function onRestoreSettings() {
+  const remoteSettings = await articleDraft.getData()
+  runSettingsMigration(remoteSettings)
+  const { pickedPaths, pickedSettings } = pickSettings(
+    remoteSettings,
+    difference(allowedLeafSettingsPaths, restoreOmitPaths),
+  )
+  if (!pickedPaths.length) {
+    return antMessage.error('备份不存在或没有有效的配置')
+  }
+
+  set_HAS_RESTORED_SETTINGS(true)
+  updateSettings(pickedSettings)
+  return toastAndReload()
+}
+
+export function TabPaneAdvance() {
+  const [internalKeysExpanded, setInternalKeysExpanded] = useState<boolean>(false)
+  const manualRefreshRelationsCacheReq = useRequest(handleManualRefreshRelationsCache, { manual: true })
+
+  return (
+    <div className={sharedClassNames.tabPane}>
+      <SettingsGroup
+        title={
+          <>
+            <IconForConfig className='mr-4px size-28px' />
+            设置
+          </>
+        }
+      >
+        <div className={clsx(sharedClassNames.settingsLine, 'gap-x-20px')}>
+          <Popconfirm title='确定' description='确定恢复默认设置? 此操作不可逆!' onConfirm={onResetSettings}>
+            <Button danger type='primary'>
+              <IconTablerRestore />
+              恢复默认设置
+            </Button>
+          </Popconfirm>
+          <AntdTooltip title='导出所有设置项到文件中, 包含 access_key 等数据, 请妥善保存'>
+            <Button onClick={() => exportSettings()}>
+              <IconTablerFileExport />
+              导出设置
+            </Button>
+          </AntdTooltip>
+          <AntdTooltip title='从文件中导入设置项, 将覆盖当前设置, 此操作不可逆!'>
+            <Button onClick={() => importSettings()}>
+              <IconTablerFileImport />
+              导入设置
+            </Button>
+          </AntdTooltip>
+        </div>
+      </SettingsGroup>
+
+      <SettingsGroup
+        title={
+          <>
+            <IconForCloudStorage className='mr-4px size-28px' />
+            设置备份
+            <HelpInfo>
+              使用专栏草稿箱作为云存储 <br />
+              勾选后可自动备份, 手动恢复
+            </HelpInfo>
+          </>
+        }
+      >
+        <div className='flex items-center gap-x-20px'>
+          <CheckboxSettingItem
+            configPath='backupSettingsToArticleDraft'
+            label='备份设置到专栏草稿箱中'
+            tooltip={`专栏 - 草稿箱 - ${APP_NAME}`}
+          />
+          <a
+            className='inline-flex items-center'
+            href='https://member.bilibili.com/platform/upload/text/draft'
+            target='_blank'
+          >
+            <IconForOpenExternalLink className='mr-4px size-16px' />
+            去草稿箱浏览
+          </a>
+          <Popconfirm title='确定' description='将覆盖本地设置? 此操作不可逆!' onConfirm={onRestoreSettings}>
+            <Button danger type='primary'>
+              <IconTablerRestore />
+              从专栏草稿箱中恢复
+            </Button>
+          </Popconfirm>
+        </div>
+      </SettingsGroup>
+
+      <SettingsGroup
+        title={
+          <>
+            <IconForReload className='mr-4px size-28px' />
+            缓存
+            <HelpInfo>手动刷新缓存数据</HelpInfo>
+          </>
+        }
+      >
+        <div className='flex items-center gap-x-20px'>
+          <Button
+            onClick={() => manualRefreshRelationsCacheReq.run()}
+            loading={manualRefreshRelationsCacheReq.loading}
+            className='gap-x-1'
+          >
+            {!manualRefreshRelationsCacheReq.loading && <IconForReload className='size-1em' />}
+            刷新黑名单/关注列表缓存
+          </Button>
+        </div>
+      </SettingsGroup>
+
+      <SettingsGroup
+        title={
+          <>
+            其他
+            <HelpInfo>这里是一些实验性设置项, 可能随时会变更或删除</HelpInfo>
+            <Button
+              onClick={() => setInternalKeysExpanded((v) => !v)}
+              className='ml-10px inline-icon-only-round-button'
+              css={internalKeysExpanded && buttonOpenCss}
+            >
+              <IconParkOutlineDownC
+                className={clsx(
+                  'size-16px transition-300 transition-transform',
+                  internalKeysExpanded ? 'rotate-180' : 'rotate-0',
+                )}
+              />
+            </Button>
+          </>
+        }
+      >
+        <CollapsePanel expanded={internalKeysExpanded}>
+          <div className='w-full flex gap-x-20px b-1px b-gate-border rounded-6px b-solid p-10px'>
+            <ResetPartialSettingsButton paths={internalBooleanPaths} className='flex-none' />
+            <div className='flex flex-1 flex-wrap items-start gap-x-20px gap-y-10px'>
+              {internalBooleanPaths.map((k) => (
+                <CheckboxSettingItem
+                  key={k}
+                  configPath={k as BooleanSettingsPath}
+                  tooltip={
+                    <>
+                      {k}
+                      {INTERNAL_BOOLEAN_TOOLTIPS[k] && (
+                        <>
+                          <br />
+                          {INTERNAL_BOOLEAN_TOOLTIPS[k]}
+                        </>
+                      )}
+                    </>
+                  }
+                  label={startCase(
+                    k.startsWith('__internal') ? k.slice('__internal'.length) : k.replaceAll('__internal.', ''),
+                  )}
+                />
+              ))}
+            </div>
+          </div>
+        </CollapsePanel>
+      </SettingsGroup>
+    </div>
+  )
+}
+
+const INTERNAL_BOOLEAN_TOOLTIPS: Partial<Record<BooleanSettingsPath, ReactNode>> = {}

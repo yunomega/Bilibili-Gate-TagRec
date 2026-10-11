@@ -1,0 +1,377 @@
+import { assert, groupBy, once, orderBy, uniq } from 'es-toolkit'
+import pmap from 'promise.map'
+import QuickLRU from 'quick-lru'
+import { snapshot } from 'valtio'
+import { EApiType } from '$enums'
+import { antMessage } from '$modules/antd'
+import { getAllFollowGroups, getFollowGroupMids } from '$modules/bilibili/me/follow-group'
+import { queryFollowedStatus } from '$modules/bilibili/me/relations/follow'
+import { followedMidSet } from '$modules/bilibili/me/relations/following-state'
+import { getUserNickname } from '$modules/bilibili/user/nickname'
+import { getSpaceAccInfo } from '$modules/bilibili/user/space-acc-info'
+import { getLoginStatus } from '$modules/login-status'
+import { setPageTitle } from '$utility/dom'
+import { parseAdvancedFilter } from '$utility/local-filter'
+import { parseDuration } from '$utility/video'
+import { BaseTabService, type IService } from '../_base'
+import { DefaultSpaceUploadOrder, SpaceUploadOrder, SpaceUploadOrderConfig, tryGetSpaceUpload } from './api'
+import { SpaceUploadItemHelper } from './api/helper'
+import { QUERY_SPACE_UPLOAD_INITIAL_PAGE, spaceUploadStore } from './store'
+import { SpaceUploadTabbarView } from './views'
+import type { ReactNode } from 'react'
+import type { WritableDeep } from 'type-fest'
+import type { SpaceUploadItem, SpaceUploadItemExtend } from '$define'
+
+const warnAnonymousUsageOnce = once(() => {
+  antMessage.warning('未登录, 查看投稿可能会受到限制!')
+})
+
+export const spaceUploadAvatarCache = new QuickLRU<number, string>({ maxSize: 100 })
+
+async function trySetFollowedMidSet(upMid: number) {
+  if (!upMid || followedMidSet.has(upMid.toString())) return
+  await queryFollowedStatus(upMid)
+}
+
+type SpaceUploadServiceConfig = {
+  mids: string[]
+  groupId?: number
+  order: SpaceUploadOrder
+  searchText: string | undefined
+  filterText: string | undefined
+  initialPage: number | undefined
+  hideChargeOnlyVideos: boolean
+  filterMinDurationValue: number | undefined
+  filterMaxDurationValue: number | undefined
+}
+export function getSpaceUploadServiceConfig(): SpaceUploadServiceConfig {
+  const snap = snapshot(spaceUploadStore) as WritableDeep<typeof spaceUploadStore>
+  return {
+    mids: snap.mids,
+    groupId: snap.groupId,
+    order: snap.usingOrder,
+    searchText: snap.searchText,
+    filterText: snap.filterText,
+    initialPage: QUERY_SPACE_UPLOAD_INITIAL_PAGE ? Number(QUERY_SPACE_UPLOAD_INITIAL_PAGE) : undefined,
+    hideChargeOnlyVideos: snap.currentFilterState.hideChargeOnlyVideos,
+    filterMinDurationValue: snap.currentFilterState.filterMinDuration,
+    filterMaxDurationValue: snap.currentFilterState.filterMaxDuration,
+  }
+}
+
+export class SpaceUploadService extends BaseTabService<SpaceUploadItemExtend> {
+  static PAGE_SIZE = 20
+
+  // service config
+  mids: string[]
+  groupId: number | undefined
+  order: SpaceUploadOrder
+  searchText: string | undefined
+  filterText: string | undefined
+  initialPage: number | undefined
+  hideChargeOnlyVideos: boolean
+  filterMinDurationValue: number | undefined
+  filterMaxDurationValue: number | undefined
+
+  override sidebarView = undefined
+
+  constructor(public config: SpaceUploadServiceConfig) {
+    super(SpaceUploadService.PAGE_SIZE)
+    Object.assign(this, config)
+    this.mids = config.mids
+    this.order = config.order
+    this.hideChargeOnlyVideos = config.hideChargeOnlyVideos
+    this.filterMinDurationValue = config.filterMinDurationValue
+    this.filterMaxDurationValue = config.filterMaxDurationValue
+    assert(this.mids.length || this.groupId !== undefined, 'mid & groupId can not both be empty')
+    this.searchText = this.searchText?.trim()
+    if (this.initialPage && (this.groupId !== undefined || this.mids.length > 1)) {
+      throw new Error('initialPage not supported when merging')
+    }
+  }
+
+  override tabbarView: ReactNode = <SpaceUploadTabbarView />
+
+  override get hasMoreExceptQueue(): boolean {
+    if (!this.service) return true
+    return this.service.hasMore
+  }
+
+  /* #region side effects */
+  private async fetchAvatars(mids: number[]) {
+    await Promise.all(
+      mids.map(async (mid) => {
+        const info = await getSpaceAccInfo(mid)
+        if (!info) return
+        spaceUploadAvatarCache.set(mid, info.face)
+      }),
+    )
+  }
+  private async fetchFollowState(mids: number[]) {
+    await pmap(mids, trySetFollowedMidSet, 3)
+  }
+
+  private pageTitleSet = false
+  private async setPageTitle() {
+    if (this.pageTitleSet) return
+
+    const textDisplays: string[] = []
+    if (this.searchText) textDisplays.push(`🔍【${this.searchText}】`)
+    if (this.filterText) textDisplays.push(`⏳【${this.filterText}】`)
+
+    const orderDispaly =
+      this.order !== DefaultSpaceUploadOrder ? `🔢【${SpaceUploadOrderConfig[this.order].label}】` : ''
+
+    let author: string
+    let shouldReRunSetTitle = false
+    if (this.mids.length) {
+      const nicknames = await pmap(this.mids, getUserNickname, 3)
+      author = nicknames
+        .map((x) => x?.trim())
+        .filter(Boolean)
+        .map((name) => `【${name}】`)
+        .join('、')
+      if (!author) {
+        author = '【未知UP】'
+        shouldReRunSetTitle = true
+      }
+    } else {
+      const tags = await getAllFollowGroups()
+      const name = tags.find((x) => x.tagid === this.groupId)?.name || ''
+      author = name ? `【${name}】` : ''
+    }
+
+    const title = [...textDisplays, orderDispaly, `${author}的投稿`]
+      .map((x) => x.trim())
+      .filter(Boolean)
+      .join(' - ')
+
+    setPageTitle(title)
+    if (!shouldReRunSetTitle) this.pageTitleSet = true
+  }
+  /* #endregion */
+
+  singleUpService: SingleUpService | undefined
+  mergeTimelineService: MergeTimelineService | undefined
+  private async setupServices(): Promise<void> {
+    if (this.singleUpService || this.mergeTimelineService) return
+
+    if (this.mids.length === 1) {
+      this.singleUpService = new SingleUpService(this.mids[0], this.order, this.searchText, this.initialPage)
+      return
+    }
+
+    if (this.mids.length) {
+      this.mergeTimelineService = new MergeTimelineService(this.mids, this.order, this.searchText)
+      return
+    }
+
+    if (this.groupId !== undefined) {
+      const mids = await getFollowGroupMids(this.groupId!)
+      mids.forEach((x) => followedMidSet.add(x.toString())) // mark followed
+      if (!mids.length) throw new Error('Group is Empty!')
+      this.mergeTimelineService = new MergeTimelineService(
+        mids.map((x) => x.toString()),
+        this.order,
+        this.searchText,
+      )
+      return
+    }
+  }
+
+  get service() {
+    return this.singleUpService || this.mergeTimelineService
+  }
+
+  override async fetchMore(abortSignal: AbortSignal): Promise<SpaceUploadItemExtend[] | undefined> {
+    if (!getLoginStatus()) warnAnonymousUsageOnce()
+
+    this.setPageTitle()
+    await this.setupServices()
+    assert(this.service, 'this.service should exist after setupServices')
+
+    const items = (await this.service.loadMore(abortSignal)) || []
+    const endVol = this.singleUpService
+      ? this.singleUpService.endVol
+      : this.mergeTimelineService!.count - this.qs.fetchedCount
+    let list: SpaceUploadItemExtend[] = items.map((item, index) => {
+      return {
+        ...item,
+        api: EApiType.SpaceUpload,
+        uniqId: `${EApiType.SpaceUpload}:${item.bvid}`,
+        groupId: this.groupId,
+        vol: endVol - index,
+        page: this.singleUpService ? this.singleUpService.page - 1 : undefined,
+      }
+    })
+
+    // filter 时保留它们的序号
+    // "充电专属"
+    if (this.hideChargeOnlyVideos) {
+      list = list.filter((item) => !SpaceUploadItemHelper.checkIsChargeOnly(item))
+    }
+    // 最短时长
+    if (this.filterMinDurationValue !== undefined) {
+      const minDuration = this.filterMinDurationValue
+      list = list.filter((item) => {
+        if (SpaceUploadItemHelper.checkIsCollection(item)) return true // 不过滤合集项
+        const duration = parseDuration(item.length)
+        return duration >= minDuration
+      })
+    }
+    // 最长时长
+    if (this.filterMaxDurationValue !== undefined) {
+      const maxDuration = this.filterMaxDurationValue
+      list = list.filter((item) => {
+        if (SpaceUploadItemHelper.checkIsCollection(item)) return true // 不过滤合集项
+        const duration = parseDuration(item.length)
+        return duration <= maxDuration
+      })
+    }
+
+    if (this.filterText) {
+      // oxlint-disable-next-line no-warning-comments
+      // TODO: add ignoreCase config inside `parseAdvancedFilter`
+      let { includes, excludes } = parseAdvancedFilter(this.filterText)
+      includes = includes.map((x) => x.toLowerCase())
+      excludes = excludes.map((x) => x.toLowerCase())
+      list = list.filter((item) => {
+        const title = item.title.toLowerCase()
+        return (
+          includes.every((include) => title.includes(include)) && excludes.every((exclude) => !title.includes(exclude))
+        )
+      })
+    }
+
+    /* #region side effects */
+    {
+      const mids = uniq(list.filter((item) => item.author.trim() !== '账号已注销'))
+        .map((item) => item.mid)
+        .filter(Boolean)
+      await Promise.all([this.fetchAvatars(mids), this.fetchFollowState(mids)])
+    }
+    if (!this.pageTitleSet) {
+      const grouped = groupBy(list, (x) => x.mid)
+      for (const [mid, sublist] of Object.entries(grouped)) {
+        const nickname = sublist.find((x) => x.author)?.author
+        if (nickname && !(await getUserNickname.queryCache(mid))) {
+          await getUserNickname.cache.set(mid, { val: nickname, ts: Date.now() })
+        }
+      }
+      await this.setPageTitle()
+    }
+    /* #endregion */
+
+    return list
+  }
+}
+
+class MergeTimelineService implements IService<SpaceUploadItem> {
+  singleUpServices: SingleUpService[]
+  constructor(
+    public mids: string[],
+    public order: SpaceUploadOrder,
+    public searchText: string | undefined,
+  ) {
+    assert(
+      this.mids.length === 1 || (this.mids.length > 1 && this.order !== SpaceUploadOrder.Fav),
+      'SpaceUploadItem.Fav not supported when merging',
+    )
+    this.singleUpServices = mids.map((mid) => new SingleUpService(mid, this.order, this.searchText))
+  }
+
+  get hasMore(): boolean {
+    return this.singleUpServices.some((service) => service.hasMore)
+  }
+
+  get count() {
+    return this.singleUpServices.reduce((total, service) => total + service.count, 0)
+  }
+
+  private async refillQueues(abortSignal: AbortSignal) {
+    // 太容易风控了, 直接访问基本不可用, 需要 load-balance 代理
+    await pmap(this.singleUpServices, (s) => s.refillQueue(1, abortSignal), 5)
+  }
+
+  async loadMore(abortSignal: AbortSignal): Promise<SpaceUploadItem[] | undefined> {
+    if (!this.hasMore) return
+
+    if (this.mids.length === 1) {
+      return this.singleUpServices[0].loadMore(abortSignal)
+    }
+
+    // pick from internal queues
+    const pickedItems: SpaceUploadItem[] = []
+    const expectSize = 10
+
+    while (this.hasMore && pickedItems.length < expectSize) {
+      await this.refillQueues(abortSignal)
+      const restServices = this.singleUpServices.filter((s) => s.bufferQueue.length > 0)
+      const pickedService = orderBy(
+        restServices.map((service) => {
+          const item = service.bufferQueue[0]
+          const valueForSort = {
+            [SpaceUploadOrder.Latest]: item.created,
+            [SpaceUploadOrder.View]: item.play,
+            [SpaceUploadOrder.Fav]: item.play, // no fav data
+          }[this.order]
+          return { service, item, valueForSort }
+        }),
+        ['valueForSort'],
+        ['desc'],
+      ).map((x) => x.service)[0]
+      if (!pickedService) break
+
+      const head = pickedService.bufferQueue[0]
+      pickedService.bufferQueue = pickedService.bufferQueue.slice(1)
+      pickedItems.push(head)
+    }
+
+    return pickedItems
+  }
+}
+
+class SingleUpService {
+  constructor(
+    public mid: string,
+    public order: SpaceUploadOrder,
+    public searchText: string | undefined,
+    public initialPage?: number | undefined,
+  ) {
+    this.page = this.initialPage ?? 1
+  }
+
+  bufferQueue: SpaceUploadItem[] = []
+  hasMoreForApi = true
+  count = 0
+  endVol = 0
+
+  get hasMore() {
+    return !!this.bufferQueue.length || this.hasMoreForApi
+  }
+
+  public async refillQueue(minimalQueueSize: number, abortSignal: AbortSignal) {
+    if (!this.hasMore) return
+    while (!abortSignal?.aborted && this.hasMoreForApi && this.bufferQueue.length < minimalQueueSize) {
+      const items = (await this.loadMore(abortSignal)) || []
+      this.bufferQueue.push(...items)
+    }
+  }
+
+  page: number
+  async loadMore(abortSignal: AbortSignal): Promise<SpaceUploadItem[] | undefined> {
+    const { items, hasMore, count, endVol } = await tryGetSpaceUpload({
+      mid: this.mid,
+      order: this.order,
+      pagenum: this.page,
+      keyword: this.searchText || '',
+    })
+
+    this.hasMoreForApi = hasMore
+    this.page++
+    this.count = count
+    this.endVol = endVol
+
+    return items
+  }
+}

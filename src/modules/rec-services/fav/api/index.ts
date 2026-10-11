@@ -1,0 +1,202 @@
+/**
+ * 收藏
+ * resource = ${avId}:${type}
+ * type 一般为 2, 即获取收藏夹里的视频返回的 Media.type 意义不明
+ * https://socialsisteryi.github.io/bilibili-API-collect/docs/video/action.html#%E6%94%B6%E8%97%8F%E8%A7%86%E9%A2%91-%E5%8F%8C%E7%AB%AF
+ */
+
+import { Panic, Result } from 'better-result'
+import { difference } from 'es-toolkit'
+import { getLoginStatus } from '$modules/login-status'
+import { request, WebApiError } from '$request'
+import { getCsrfToken, getUid } from '$utility/cookie'
+import { formatFavFolderUrl } from '../fav-url'
+import { isFavFolderDefault, isFavFolderPrivate } from '../fav-util'
+import { favStore, updateFavFolderList } from '../store'
+import type { FavFolderListAllJson } from '../types/folders/list-all-folders'
+
+/* #region base */
+// media_ids: 收藏夹 id, 逗号分割
+async function favDeal({
+  avid,
+  add_media_ids = '',
+  del_media_ids = '',
+}: {
+  avid: string | number
+  add_media_ids?: string
+  del_media_ids?: string
+}) {
+  const form = new URLSearchParams({
+    rid: avid.toString(),
+    type: '2',
+    add_media_ids,
+    del_media_ids,
+    platform: 'web',
+    eab_x: '2',
+    ramval: '0',
+    ga: '1',
+    gaia_source: 'web_normal',
+    csrf: getCsrfToken(),
+  })
+  return (await request.safePost('/x/v3/fav/resource/deal', form))
+    .andThen((resp) => WebApiError.validateAxiosResponse(resp))
+    .andThen((json) => Result.ok())
+}
+/* #endregion */
+
+export const UserFavApi = {
+  getVideoFavState,
+  addFav,
+  removeFavs,
+  moveFavs, // 移动 1-to-1
+  modifyFav,
+}
+
+/* #region 批量操作 */
+// 删除
+export async function removeFavs(folderId: number | string, resources: string | string[]) {
+  const form = new URLSearchParams({
+    resources: [resources].flat().join(','),
+    media_id: folderId.toString(),
+    platform: 'web',
+    csrf: getCsrfToken(),
+  })
+  return (await request.safePost('/x/v3/fav/resource/batch-del', form))
+    .andThen((resp) => WebApiError.validateAxiosResponse(resp, '删除收藏失败'))
+    .andThen((json) => Result.ok(json?.message as string | undefined))
+}
+
+// 移动
+export async function moveFavs(resources: string | string[], src: string | number, target: string | number) {
+  const form = new URLSearchParams({
+    resources: [resources].flat().join(','),
+    src_media_id: src.toString(),
+    tar_media_id: target.toString(),
+    mid: getUid(),
+    platform: 'web',
+    csrf: getCsrfToken(),
+  })
+  return (await request.safePost('/x/v3/fav/resource/move', form))
+    .andThen((resp) => WebApiError.validateAxiosResponse(resp, '移动收藏失败'))
+    .andThen((json) => Result.ok(json?.message as string | undefined))
+}
+/* #endregion */
+
+/**
+ * 获取视频所在收藏夹
+ * @see https://github.com/the1812/Bilibili-Evolved/blob/master/registry/lib/components/video/quick-favorite/QuickFavorite.vue
+ */
+export async function getVideoFavState(avid: number | string) {
+  if (!getLoginStatus()) return
+  const res = await request.get('/x/v3/fav/folder/created/list-all', {
+    params: {
+      up_mid: getUid(),
+      type: 2,
+      rid: avid,
+    },
+  })
+  const json = res.data as FavFolderListAllJson
+  const favFolders = json.data.list.filter((folder) => folder.fav_state > 0)
+
+  const favFolderNames = favFolders.map((f) => f.title)
+  const favFolderUrls = favFolders.map((f) => formatFavFolderUrl(f.id))
+  const favFolderIds = favFolders.map((f) => f.id)
+
+  return { favFolders, favFolderNames, favFolderUrls, favFolderIds }
+}
+
+export let defaultFavFolderId: number | undefined
+export let defaultFavFolderTitle: string | undefined
+export async function addFav(avid: string | number, inputFolderIds?: number | number[]) {
+  const folderIds = [inputFolderIds].flat().filter((x) => x !== undefined)
+  if (!folderIds.length && (!defaultFavFolderId || !defaultFavFolderTitle)) {
+    await updateFavFolderList()
+    const { folders } = favStore
+    const defaultFolder = folders.find((f) => isFavFolderDefault(f.attr)) ?? folders[0]
+    if (!defaultFolder) return Result.err(new Panic({ message: '没有找到默认收藏夹!' }))
+    defaultFavFolderId = defaultFolder.id
+    defaultFavFolderTitle = defaultFolder.title
+  }
+  if (!folderIds.length && defaultFavFolderId) {
+    folderIds.push(defaultFavFolderId)
+  }
+  if (!folderIds.length) {
+    return Result.err(new Panic({ message: '没有找到默认收藏夹!' }))
+  }
+  return await favDeal({ avid, add_media_ids: folderIds.join(',') })
+}
+
+export async function fetchAllFavFolders() {
+  const res = await request.get('/x/v3/fav/folder/created/list-all', {
+    params: { up_mid: getUid() },
+  })
+  const json = res.data as FavFolderListAllJson
+  const folders = json.data.list
+  return folders
+}
+
+function modifyFav(
+  avid: string | number,
+  sourceFolderIds: number[] | undefined,
+  targetFolderIds: number[] | undefined,
+) {
+  const source = (sourceFolderIds ?? []).filter((x) => x !== undefined)
+  const target = (targetFolderIds ?? []).filter((x) => x !== undefined)
+  const delArr = difference(source, target)
+  const addArr = target
+  return favDeal({
+    avid,
+    del_media_ids: delArr.length ? delArr.join(',') : undefined,
+    add_media_ids: addArr.length ? addArr.join(',') : undefined,
+  })
+}
+
+export async function getFavFolderInfo(folderId: number) {
+  return (
+    await request.safeGet('/x/v3/fav/folder/info', {
+      params: { media_id: folderId, web_location: '0.0' },
+    })
+  )
+    .andThen((resp) => WebApiError.validateAxiosResponse(resp, '获取收藏夹信息失败'))
+    .andThen((json) => Result.ok(json.data))
+}
+
+/**
+ * R9: 新建收藏夹 (登录态 + csrf)
+ * - title ≤20 字 (B站限制); 每日创建上限约 5 个 (社区口径, 待实测)
+ * - 成功后强制刷新夹列表 (新夹入 favStore; 创建是低频动作, 1 次 list-all 可接受)
+ */
+export function createFavFolder({ title, intro, privacy = 0 }: { title: string; intro?: string; privacy?: 0 | 1 }) {
+  return Result.gen(async function* () {
+    const form = new URLSearchParams({
+      title,
+      intro: intro ?? '',
+      privacy: privacy.toString(),
+      csrf: getCsrfToken(),
+    })
+    const resp = yield* await request.safePost('/x/v3/fav/folder/add', form)
+    const json = yield* WebApiError.validateAxiosResponse(resp, '创建收藏夹失败')
+    const data = (json as { data?: { id?: number } }).data
+    await updateFavFolderList(true)
+    return Result.ok({ id: data?.id, title })
+  })
+}
+
+export function renameFavFolder(folderId: number, newTitle: string) {
+  return Result.gen(async function* () {
+    const info = yield* await getFavFolderInfo(folderId)
+    if (!info) return Result.err('获取收藏夹信息失败!')
+
+    const form = new URLSearchParams({
+      media_id: folderId.toString(),
+      title: newTitle,
+      intro: info.intro,
+      cover: info.cover,
+      privacy: isFavFolderPrivate(info.attr) ? '1' : '0', // 0：公开  1：私有
+      csrf: getCsrfToken(),
+    })
+    const resp = yield* await request.safePost('/x/v3/fav/folder/edit', form)
+    const json = yield* WebApiError.validateAxiosResponse(resp, '重命名收藏夹失败')
+    return Result.ok()
+  })
+}

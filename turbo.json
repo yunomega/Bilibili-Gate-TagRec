@@ -1,0 +1,58 @@
+{
+  "$schema": "https://turborepo.com/schema.json",
+  "ui": "stream",
+  "tasks": {
+    "build:scss": {
+      "inputs": ["src/**/*.scss"],
+      "outputs": ["src/**/*.scss.d.ts"]
+    },
+    "_typecheck": {
+      "dependsOn": ["build:scss"],
+      "inputs": ["tsconfig.json", "tsconfig.*.json", "src/**/*.{ts,tsx}", "*.ts"]
+    },
+    "_lint": {
+      "inputs": [
+        "src/**/*.{js,mjs,cjs,jsx,ts,mts,cts,tsx,vue,astro,svelte}",
+        "tsconfig.json",
+        "tsconfig.*.json",
+        ".oxlintrc.json"
+      ]
+    },
+    "build:vite": {
+      "dependsOn": ["build:scss"],
+      "env": ["RELEASE", "RELEASE_NIGHTLY", "MINIFY", "GHD_DESCRIBE", "CI", "KEEP_DIST"],
+      "inputs": [
+        "src/**/*.{ts,tsx}",
+        "tsconfig.json",
+        "tsconfig.*.json",
+        "vite.config.ts",
+        "uno.config.ts",
+        "package.json",
+        "LICENSE",
+        "NOTICE",
+        "licenses/**",
+        "pnpm-lock.yaml",
+        "scripts/release-licenses.mjs"
+      ],
+      "outputs": ["dist/**"]
+    },
+    "build:vite-raw": {
+      "dependsOn": ["build:scss"],
+      "env": ["RELEASE", "RELEASE_NIGHTLY", "MINIFY", "GHD_DESCRIBE", "CI", "KEEP_DIST"],
+      "inputs": [
+        "src/**/*.{ts,tsx}",
+        "tsconfig.json",
+        "tsconfig.*.json",
+        "vite.config.ts",
+        "uno.config.ts",
+        "package.json",
+        "LICENSE",
+        "NOTICE",
+        "licenses/**",
+        "pnpm-lock.yaml",
+        "scripts/release-licenses.mjs"
+      ],
+      "outputs": ["dist/**"]
+    }
+  }
+}

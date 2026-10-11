@@ -1,0 +1,350 @@
+import { useMemoizedFn, useRequest } from 'ahooks'
+import { Button, Input, Popover } from 'antd'
+import { assert, shuffle } from 'es-toolkit'
+import ms from 'ms'
+import { useState } from 'react'
+import { snapshot, useSnapshot } from 'valtio'
+import { REQUEST_FAIL_MSG } from '$common'
+import { useLinkTarget } from '$components/VideoCard/use/useOpenRelated'
+import { EApiType } from '$enums'
+import { antMessage } from '$modules/antd'
+import { IconForEdit, IconForOpenExternalLink, IconForPlayer } from '$modules/icon'
+import { isWebApiSuccess, request } from '$request'
+import { getIdbCache, wrapWithIdbCache } from '$utility/idb'
+import toast from '$utility/toast'
+import { renameFavFolder } from '../api'
+import { FavItemsOrder, handleItemsOrder } from '../fav-enum'
+import { formatFavFolderUrl, formatFavPlaylistUrl } from '../fav-url'
+import { isFavFolderPrivate } from '../fav-util'
+import { favStore, updateFavFolderMediaCount, updateFavList } from '../store'
+import { IconForPrivateFolder, IconForPublicFolder } from '../views'
+import { FavItemsOrderSwitcher } from '../views/fav-items-order'
+import { FAV_PAGE_SIZE } from './_base'
+import type { SetNonNullable } from 'type-fest'
+import type { ItemsSeparator } from '$define'
+import type { IFavInnerService } from '../index'
+import type { FavItemExtend } from '../types'
+import type { FavFolder } from '../types/folders/list-all-folders'
+import type { FavFolderDetailInfo, ResourceListJson } from '../types/folders/list-folder-items'
+
+export function FavFolderRenamePopover({
+  folderId,
+  currentFolderTitle,
+  onClosePopover,
+}: {
+  folderId: number
+  currentFolderTitle: string
+  onClosePopover: () => void
+}) {
+  const $req = useRequest((newTitle: string) => renameFavFolder(folderId, newTitle), { manual: true })
+
+  const [folderTitle, setFolderTitle] = useState<string>(currentFolderTitle)
+  const handleSubmit = useMemoizedFn(async () => {
+    const newTitle = folderTitle.trim()
+    if (!newTitle) return antMessage.error('收藏夹名称不能为空!')
+    if (newTitle === currentFolderTitle) return antMessage.warning('无变更!')
+
+    const result = await $req.runAsync(newTitle)
+    if (result.isErr()) {
+      const msg = typeof result.error === 'string' ? result.error : result.error.message
+      return antMessage.error(msg)
+    }
+
+    onClosePopover()
+    // refresh UI state
+    const folder = favStore.folders.find((f) => f.id === folderId)
+    if (folder) folder.title = folderTitle
+  })
+
+  return (
+    <div className='flex flex-col gap-y-2'>
+      <div>重命名收藏夹</div>
+      <Input
+        placeholder='收藏夹名称'
+        value={folderTitle}
+        onChange={(e) => setFolderTitle(e.target.value)}
+        onPressEnter={handleSubmit}
+      />
+      <div className='flex justify-end gap-x-2'>
+        <Button onClick={onClosePopover}>取消</Button>
+        <Button
+          type='primary'
+          loading={$req.loading}
+          onClick={handleSubmit}
+          disabled={!folderTitle || folderTitle === currentFolderTitle}
+        >
+          确定
+        </Button>
+      </div>
+    </div>
+  )
+}
+
+export function FavFolderSeparator({ service }: { service: FavFolderBasicService }) {
+  const [renamePopoverOpen, setRenamePopoverOpen] = useState(false)
+  const { viewingSomeFolder } = useSnapshot(favStore)
+  const target = useLinkTarget()
+
+  const { id: folderId, attr: folderAttr, title: folderTitleFromService } = service.entry
+  const folderTitle = useSnapshot(favStore.folders).find((f) => f.id === folderId)?.title ?? folderTitleFromService
+  const clsIcon = 'size-16px'
+
+  return (
+    <div className='col-span-full mb-15px mt-5px flex flex-col gap-y-10px'>
+      <div className='flex-v-center gap-x-1 text-1.6em'>
+        {isFavFolderPrivate(folderAttr) ? <IconForPrivateFolder /> : <IconForPublicFolder />}
+        收藏夹 · {folderTitle}
+      </div>
+      <div className='flex-v-center gap-x-10px'>
+        <Button href={formatFavPlaylistUrl(folderId)} target={target}>
+          <IconForPlayer className={clsIcon} />
+          播放全部
+        </Button>
+
+        <Button href={formatFavFolderUrl(folderId, folderAttr)} target={target}>
+          <IconForOpenExternalLink className={clsIcon} />
+          去「我的空间」查看
+        </Button>
+
+        {viewingSomeFolder && (
+          <Popover
+            open={renamePopoverOpen}
+            onOpenChange={setRenamePopoverOpen}
+            trigger='click'
+            content={
+              <FavFolderRenamePopover
+                folderId={folderId}
+                currentFolderTitle={folderTitle}
+                onClosePopover={() => setRenamePopoverOpen(false)}
+              />
+            }
+          >
+            <Button className='gap-x-1'>
+              <IconForEdit className={clsIcon} />
+              重命名
+            </Button>
+          </Popover>
+        )}
+      </div>
+    </div>
+  )
+}
+
+const FAV_FOLDER_API_SUPPOETED_ORDER = [
+  FavItemsOrder.FavTimeDesc,
+  FavItemsOrder.PlayCountDesc,
+  FavItemsOrder.PubTimeDesc,
+] as const
+
+type FavFolderApiSuppoetedOrder = (typeof FAV_FOLDER_API_SUPPOETED_ORDER)[number]
+
+function isFavFolderApiSuppoetedOrder(order: FavItemsOrder): order is FavFolderApiSuppoetedOrder {
+  return FAV_FOLDER_API_SUPPOETED_ORDER.includes(order)
+}
+
+// 收藏夹全部内容缓存
+const favFolderAllItemsCache = getIdbCache('fav-folder-all-items')
+export async function clearFavFolderAllItemsCache(folderId: number) {
+  await favFolderAllItemsCache.delete(folderId)
+}
+
+export class FavFolderService implements IFavInnerService {
+  needLoadAll: boolean
+  constructor(
+    public folderId: number,
+    public addSeparator: boolean,
+    public itemsOrder: FavItemsOrder,
+  ) {
+    if (this.itemsOrder === FavItemsOrder.Initial) {
+      throw new Error('this should not happen!')
+    }
+    if (isFavFolderApiSuppoetedOrder(this.itemsOrder)) {
+      this.needLoadAll = false
+    } else {
+      this.needLoadAll = true
+    }
+  }
+
+  get hasMore() {
+    if (this.addSeparator && !this.separatorAdded) return true
+    if (this.needLoadAll) {
+      if (!this.allItemsLoaded) return true
+      return !!this.bufferQueue.length
+    } else {
+      if (!this.innerService) return true
+      return this.innerService.hasMore
+    }
+  }
+
+  private separatorAdded = false
+  private get separator(): ItemsSeparator {
+    this.assertInnerService()
+    return {
+      api: EApiType.Separator,
+      uniqId: `${EApiType.Fav}:folder:separator:${this.folderId}`,
+      content: <FavFolderSeparator service={this.innerService} />,
+      wrapWithDivider: false,
+    }
+  }
+
+  entry: FavFolder | undefined
+  innerService: FavFolderBasicService | undefined
+  // https://www.totaltypescript.com/tips/use-assertion-functions-inside-classes
+  assertInnerService(): asserts this is SetNonNullable<FavFolderService, 'innerService' | 'entry'> {
+    assert(this.innerService, 'this.innerService should not be undefined')
+    assert(this.entry, 'this.entry should not be undefined')
+  }
+
+  async createService() {
+    if (this.innerService) return
+
+    await updateFavList()
+    const entry = snapshot(favStore.folders).find((f) => f.id === this.folderId)
+    assert(entry, `favStore.favFolders should have this entry[fid=${this.folderId}]`)
+    this.entry = entry
+
+    if (isFavFolderApiSuppoetedOrder(this.itemsOrder)) {
+      this.innerService = new FavFolderBasicService(entry, this.itemsOrder)
+    } else {
+      this.innerService = new FavFolderBasicService(entry)
+    }
+  }
+
+  async loadMore(abortSignal: AbortSignal) {
+    if (!this.innerService) await this.createService()
+    if (!this.hasMore) return
+
+    if (this.addSeparator && !this.separatorAdded) {
+      this.separatorAdded = true
+      return [this.separator]
+    }
+
+    // load all
+    if (this.needLoadAll) {
+      if (!this.allItemsLoaded) await this.loadAllItems(abortSignal)
+
+      // shuffle every time
+      if (this.itemsOrder === FavItemsOrder.Shuffle) {
+        this.bufferQueue = shuffle(this.bufferQueue)
+      }
+
+      const sliced = this.bufferQueue.slice(0, FAV_PAGE_SIZE)
+      this.bufferQueue = this.bufferQueue.slice(FAV_PAGE_SIZE)
+      return sliced
+    }
+
+    // normal
+    else {
+      const ret = await this.innerService?.loadMore(abortSignal)
+      this.runSideEffects()
+      return ret
+    }
+  }
+
+  private allItemsLoaded = false
+  private bufferQueue: FavItemExtend[] = []
+  private async loadAllItems(abortSignal: AbortSignal) {
+    const allItems = await this.fetchAllItems(abortSignal)
+    this.bufferQueue = handleItemsOrder(allItems, this.itemsOrder)
+    this.allItemsLoaded = true
+    this.runSideEffects()
+  }
+  private _fetchAllItems = async (abortSignal: AbortSignal) => {
+    this.assertInnerService()
+    const allItems: FavItemExtend[] = []
+    while (this.innerService.hasMore && !abortSignal.aborted) {
+      const items = (await this.innerService.loadMore(abortSignal)) || []
+      allItems.push(...items)
+    }
+    return allItems
+  }
+  // __fetchAllItems may results multiple requests, so cache it
+  private _fetchAllItemsWithCache = wrapWithIdbCache({
+    fn: this._fetchAllItems,
+    tableName: favFolderAllItemsCache,
+    generateKey: () => `${this.folderId}`,
+    ttl: ms('5min'),
+  })
+  private fetchAllItems = (abortSignal: AbortSignal) => {
+    this.assertInnerService()
+    const shouldUseCache = this.entry.media_count > FavFolderBasicService.PAGE_SIZE * 3 // this is affordable
+    return shouldUseCache ? this._fetchAllItemsWithCache(abortSignal) : this._fetchAllItems(abortSignal)
+  }
+
+  private runSideEffects() {
+    this.assertInnerService()
+    if (typeof this.innerService.info?.media_count === 'number') {
+      updateFavFolderMediaCount(this.folderId, this.innerService.info.media_count)
+    }
+  }
+
+  get extraTabbarView() {
+    return <FavItemsOrderSwitcher />
+  }
+}
+
+export class FavFolderBasicService {
+  static PAGE_SIZE = 20
+
+  constructor(
+    public entry: FavFolder,
+    public itemsOrder: FavFolderApiSuppoetedOrder = FavItemsOrder.FavTimeDesc,
+  ) {
+    this.hasMore = entry.media_count > 0
+  }
+
+  hasMore: boolean
+  info: FavFolderDetailInfo | undefined
+  page = 0 // pages loaded
+
+  async loadMore(abortSignal: AbortSignal): Promise<FavItemExtend[] | undefined> {
+    if (!this.hasMore) return
+
+    // mtime(最近收藏)  view(最多播放) pubtime(最新投稿)
+    const order = {
+      [FavItemsOrder.FavTimeDesc]: 'mtime',
+      [FavItemsOrder.PlayCountDesc]: 'view',
+      [FavItemsOrder.PubTimeDesc]: 'pubtime',
+    }[this.itemsOrder]
+
+    const res = await request.get('/x/v3/fav/resource/list', {
+      params: {
+        media_id: this.entry.id,
+        pn: this.page + 1, // start from 1
+        ps: FavFolderBasicService.PAGE_SIZE,
+        keyword: '',
+        order, // mtime(最近收藏)  view(最多播放) pubtime(最新投稿)
+        type: '0', // unkown
+        tid: '0', // 分区
+        platform: 'web',
+      },
+    })
+
+    const json = res.data as ResourceListJson
+    if (!isWebApiSuccess(json)) {
+      toast(json.message || REQUEST_FAIL_MSG)
+      return
+    }
+
+    this.page++
+    this.hasMore = json.data.has_more
+    this.info = json.data.info
+
+    // 新建空收藏夹, medias = null
+    let items = json.data.medias || []
+    items = items.filter((item) => {
+      if (item.title === '已失效视频') return false
+      return true
+    })
+
+    return items.map((item) => {
+      return {
+        ...item,
+        from: 'fav-folder',
+        folder: this.info!,
+        api: EApiType.Fav,
+        uniqId: `${EApiType.Fav}:folder:${this.info?.id || this.entry.id}:${item.bvid}`,
+      }
+    })
+  }
+}

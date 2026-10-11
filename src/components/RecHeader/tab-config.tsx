@@ -1,0 +1,138 @@
+import { cloneElement, type ReactElement, type ReactNode } from 'react'
+import { useUnoMerge } from 'unocss-merge/react'
+import { ETab } from '$enums'
+import {
+  IconForDynamicFeed,
+  IconForFav,
+  IconForFollowedOnly,
+  IconForHistory,
+  IconForHot,
+  IconForLike,
+  IconForLive,
+  IconForPc,
+  IconForPhone,
+  IconForSpaceUpload,
+  IconForWatchlater,
+} from '$modules/icon'
+import { favStore } from '$modules/rec-services/fav/store'
+import { isHotTabUsingShuffle } from '$modules/rec-services/hot'
+import { IconForTagRecCustom, IconForTagRecFav } from '$modules/tag-rec/ui/icons' // [tag-rec]
+import { advancedFilterHelpInfo } from '$utility/local-filter'
+
+export type TabConfigItem = {
+  icon: ReactElement
+  label: string
+  desc: string
+  extraHelpInfo?: ReactNode
+  swr?: boolean // stale while revalidate
+  anonymousUsage?: boolean // 游客可访问?
+}
+
+export const TabConfig: Record<ETab, TabConfigItem> = {
+  [ETab.AppRecommend]: {
+    icon: <IconForPhone className='size-18px' />,
+    label: '推荐',
+    desc: '使用 Bilibili App 端推荐 API',
+    anonymousUsage: true,
+  },
+  [ETab.PcRecommend]: {
+    icon: <IconForPc className='size-18px' />,
+    label: '推荐',
+    desc: '使用 PC 端首页推荐 API',
+    anonymousUsage: true,
+  },
+  [ETab.KeepFollowOnly]: {
+    icon: <IconForFollowedOnly className='size-18px' />,
+    label: '已关注',
+    desc: '从 PC 端推荐中筛选出「已关注」，可能比较慢；关注的UP更新在动态',
+  },
+  [ETab.DynamicFeed]: {
+    icon: <IconForDynamicFeed className='size-18px' />,
+    label: '动态',
+    desc: '关注的 UP 动态更新',
+    swr: true,
+  },
+  [ETab.Watchlater]: {
+    icon: (
+      // circle 使用的是 fill, 在 tab 中显示太细了
+      <IconForWatchlater className='size-17px [&_.circle]:stroke-current' />
+    ),
+    label: '稍后再看',
+    desc: '我的稍后再看',
+    swr: true,
+  },
+  [ETab.Fav]: {
+    icon: <IconForFav className='mt--1px size-16px' />,
+    label: '收藏',
+    desc: '我的收藏',
+    get swr() {
+      return !favStore.usingShuffle
+    },
+  },
+  [ETab.Hot]: {
+    icon: <IconForHot className='size-16px' />,
+    label: '热门',
+    desc: '各个领域中新奇好玩的优质内容都在这里~',
+    anonymousUsage: true,
+    get swr() {
+      return !isHotTabUsingShuffle()
+    },
+  },
+  [ETab.Live]: {
+    icon: <IconForLive className='size-16px' />,
+    label: '直播',
+    desc: '关注的直播',
+    swr: true,
+  },
+  [ETab.SpaceUpload]: {
+    icon: <IconForSpaceUpload className='size-16px' />,
+    label: '投稿',
+    desc: 'UP 视频投稿',
+    anonymousUsage: true, // 防止未登录 fallback 到 app-recommend
+    extraHelpInfo: (
+      <div className='ml-20px'>
+        搜索词：搜索相关作品 <br />
+        本地过滤词：本地过滤搜索结果；本地过滤词支持高级规则：
+        <div className='ml-20px'>{advancedFilterHelpInfo}</div>
+      </div>
+    ),
+  },
+  [ETab.Liked]: {
+    icon: <IconForLike className='size-16px' />,
+    label: '赞',
+    desc: '我的点赞：使用 App 端个人空间 API，需要 access_key',
+    swr: true,
+  },
+  [ETab.History]: {
+    icon: <IconForHistory className='size-16px' />,
+    label: '历史',
+    desc: '我看过的内容',
+    swr: true,
+  },
+  // [tag-rec]
+  [ETab.TagRecFav]: {
+    icon: <IconForTagRecFav className='size-16px' />,
+    label: '主题推荐',
+    desc: '从标签收藏表加权抽样',
+    anonymousUsage: true,
+  },
+  // [tag-rec]
+  [ETab.TagRecCustom]: {
+    icon: <IconForTagRecCustom className='size-16px' />,
+    label: '标签发掘',
+    desc: '标签发掘组拉取 tag/top 池',
+    anonymousUsage: true,
+  },
+}
+
+export function TabIcon({ tabKey, active, className }: { tabKey: ETab; active?: boolean; className?: string }) {
+  const { icon } = TabConfig[tabKey]
+  const iconProps = icon.props as { className?: string; css?: any }
+  const newProps = {
+    ...iconProps,
+    className: useUnoMerge(iconProps.className, className),
+    active: tabKey === ETab.Live ? active : undefined, // 否则 warn: svg recived boolean props
+  }
+  const cloned = cloneElement(icon, newProps)
+  return cloned
+}

@@ -1,0 +1,104 @@
+/**
+ * 模拟 TV 端获取 access_key
+ * https://socialsisteryi.github.io/bilibili-API-collect/docs/login/login_action/QR.html#tv%E7%AB%AF%E6%89%AB%E7%A0%81%E7%99%BB%E5%BD%95
+ */
+
+import { delay } from 'es-toolkit'
+import toast from '$utility/toast'
+import { getQrCodeInfo, poll, type PollResult } from './api'
+import {
+  hideQrCodeModal,
+  qrcodeStore,
+  showQrCodeModal,
+  updateStore,
+  whenQrCodeModalHide,
+  whenQrCodeRefresh,
+} from './TvQrCodeAuth'
+
+async function refreshQrCode() {
+  const qrinfo = await getQrCodeInfo()
+  if (!qrinfo) return
+
+  // show
+  showQrCodeModal({ qrcodeUrl: qrinfo.url, auth_code: qrinfo.auth_code })
+  return true
+}
+
+// @ts-ignore
+// window.getAccessKeyByQrCode = getAccessKeyByQrCode
+
+export async function getAccessKeyByQrCode() {
+  // poll state
+  let pollfor: string | undefined
+  let res: PollResult | undefined
+
+  const next = await refreshQrCode()
+  if (!next) return
+  pollfor = qrcodeStore.auth_code
+
+  // break check
+  // wrap shouldBreak before & after any long-running operation
+  // just check, no side effects
+  function shouldBreak() {
+    if (!qrcodeStore.show) return true
+    if (!qrcodeStore.auth_code) return true
+    if (pollfor !== qrcodeStore.auth_code) return true
+  }
+  function shouldContinue() {
+    return !shouldBreak()
+  }
+
+  while (shouldContinue()) {
+    // delay
+    const p1 = delay(1500) // wait enough time
+    const p2 = whenQrCodeModalHide() // if user click close, quick break
+    await Promise.race([p1, p2])
+    p2.off()
+    if (shouldBreak()) return
+
+    // poll
+    res = await poll(qrcodeStore.auth_code)
+    const { success, accessKey, accessKeyExpireAt, message, action } = res
+    if (shouldBreak()) return
+
+    /**
+     * handle result
+     */
+    // in any case, show message
+    updateStore({ message })
+
+    if (success) {
+      await delay(1000)
+      hideQrCodeModal()
+      return { accessKey, accessKeyExpireAt }
+    }
+
+    // refresh
+    if (action === 'refresh') {
+      updateStore({ message: '二维码已过期，请点击刷新', expired: true })
+
+      const p1 = whenQrCodeModalHide()
+      const p2 = whenQrCodeRefresh()
+      await Promise.race([p1, p2])
+      p1.off()
+      p2.off()
+      if (shouldBreak()) return
+
+      const next = await refreshQrCode()
+      if (!next) return
+      pollfor = qrcodeStore.auth_code
+
+      updateStore({ message: '已刷新二维码', expired: false })
+      continue
+    }
+
+    if (action === 'wait') {
+      continue
+    }
+
+    // other errors
+    updateStore({ message })
+    toast(message)
+    return
+  }
+}

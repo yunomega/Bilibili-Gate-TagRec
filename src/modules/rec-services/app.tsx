@@ -1,0 +1,338 @@
+import { av2bv } from '@mgdn/bvid'
+import { range, shuffle, uniqBy } from 'es-toolkit'
+import { times } from 'es-toolkit/compat'
+import pmap from 'promise.map'
+import { explainForFlag } from '$components/ModalSettings/index.shared'
+import { CheckboxSettingItem } from '$components/ModalSettings/setting-item'
+import { useOnRefresh, type RefreshFn } from '$components/Recommends/rec.shared'
+import { checkIsAppRecommend, type AppRecItem, type AppRecItemExtend, type RecItemType } from '$define'
+import { EApiType, ETab } from '$enums'
+import { AntdTooltip } from '$modules/antd/custom'
+import { getVideoDetail } from '$modules/bilibili/video/video-detail'
+import { getFollowedStatus } from '$modules/filter'
+import { normalizeCardData, type IVideoCardData } from '$modules/filter/normalize'
+import { IconForLike } from '$modules/icon'
+import { getLoginStatus } from '$modules/login-status'
+import { getSettingsSnapshot, useSettingsSnapshot } from '$modules/settings'
+import { anonymousFlag, gmrequest } from '$request'
+import { GateQueryKey } from '$routes'
+import { BaseTabService, type IService } from './_base'
+import { DynamicFeedRecService, getDynamicFeedServiceConfig } from './dynamic-feed'
+import { createDfStore } from './dynamic-feed/store'
+import { FavRecService, getFavServiceConfig, type FavServiceConfig } from './fav'
+import { FavItemsOrder } from './fav/fav-enum'
+import { WatchlaterRecService } from './watchlater'
+import { WatchlaterItemsOrder } from './watchlater/watchlater-enum'
+import type { ipad } from '$define/app-recommend.ipad'
+
+type AppRecServiceConfig = ReturnType<typeof getAppRecServiceConfig>
+
+export function getAppRecServiceConfig() {
+  const { addOtherTabContents, anonymousFetch } = getSettingsSnapshot().appRecommend
+  return { addOtherTabContents, anonymousFetch }
+}
+
+export const appRecShowContentFromOtherTabEl = (refresh?: RefreshFn) => (
+  <CheckboxSettingItem
+    configPath='appRecommend.addOtherTabContents'
+    label='加入来自其他 Tab 的内容'
+    tooltip={
+      <>
+        显示来自其他 Tab 的内容 <br />
+        如动态 / 收藏 / 稍后再看 <br />
+        但是: 刷新时间会更长
+      </>
+    }
+    extraAction={() => refresh?.()}
+  />
+)
+
+export const appRecAnonymousFetchEl = (refresh?: RefreshFn, disabled?: boolean) => (
+  <CheckboxSettingItem
+    disabled={disabled}
+    configPath={'appRecommend.anonymousFetch'}
+    label='匿名获取推荐'
+    tooltip={
+      <>
+        {explainForFlag('使用游客身份获取推荐', '使用登录身份获取个性化推荐')}
+        注意: 勾选时,「我不想看」之后还可能还会刷到!
+      </>
+    }
+    extraAction={() => refresh?.()}
+  />
+)
+
+function AppRecTabbarView() {
+  const onRefresh = useOnRefresh()
+  const {
+    hidingTabKeys,
+    appRecommend: { enableTabbarQuickSwitch },
+  } = useSettingsSnapshot()
+  const showLikedEntry = hidingTabKeys.includes(ETab.Liked)
+
+  return (
+    <div className='flex items-center gap-x-10px'>
+      {showLikedEntry && (
+        <AntdTooltip title='查看「我」点赞的视频'>
+          <a href={`/?${GateQueryKey.Tab}=${ETab.Liked}`} target='_blank'>
+            <IconForLike className='size-18px align-top' />
+          </a>
+        </AntdTooltip>
+      )}
+      {enableTabbarQuickSwitch && (
+        <>
+          {appRecShowContentFromOtherTabEl(onRefresh)}
+          {appRecAnonymousFetchEl(onRefresh)}
+        </>
+      )}
+    </div>
+  )
+}
+
+export class AppRecService extends BaseTabService<RecItemType> {
+  // 无法指定, 根据返回观察得到; 20 / 16 不定
+  static readonly PAGE_SIZE = 16
+
+  override tabbarView = <AppRecTabbarView />
+  override sidebarView = undefined
+
+  innerService: AppRecInnerService
+  allServices: IService[] = []
+  otherTabServices: IService[] = []
+  constructor(public config: AppRecServiceConfig) {
+    super(AppRecService.PAGE_SIZE)
+    this.innerService = new AppRecInnerService(config.anonymousFetch)
+    this.allServices = [this.innerService]
+    this.initOtherTabServices()
+  }
+
+  initOtherTabServices() {
+    if (!getLoginStatus()) return
+    if (!this.config.addOtherTabContents) return
+
+    let dynamicFeedService: IService
+    let favService: IService
+    let watchlaterService: IService
+    {
+      const store = createDfStore()
+      store.upMid = undefined
+      store.selectedGroupId = undefined
+      const config = getDynamicFeedServiceConfig(store)
+      Object.assign(config, {
+        showLiveInDynamicFeed: true,
+        whenViewAllEnableHideSomeContents: false,
+        filterCacheEnabled: false,
+      } satisfies Partial<typeof config>)
+      dynamicFeedService = new DynamicFeedRecService(config)
+    }
+    {
+      const config = Object.assign(getFavServiceConfig(), {
+        selectedKey: 'all',
+        viewingAll: true,
+        viewingSomeFolder: false,
+        viewingSomeCollection: false,
+        itemsOrder: FavItemsOrder.Shuffle,
+        selectedFavFolderId: undefined,
+        selectedFavCollectionId: undefined,
+        addSeparator: false,
+      } satisfies Omit<FavServiceConfig, 'excludedFolderIds'>)
+      favService = new FavRecService(config)
+    }
+    {
+      watchlaterService = new WatchlaterRecService(WatchlaterItemsOrder.AddTimeDesc, false)
+    }
+    this.otherTabServices = [dynamicFeedService, favService, watchlaterService]
+
+    const allServices: IService[] = []
+    const rate = 7 / 3
+    allServices.push(...this.otherTabServices)
+    times(Math.round(rate * this.otherTabServices.length), () => allServices.push(this.innerService))
+    this.allServices = shuffle(allServices)
+  }
+
+  override async restore(): Promise<void> {
+    super.restore()
+    // prefill fetched videoDetail
+    if (this.qs.bufferQueue.some((item) => AppRecService.isNormalVideoFromFollowedUp(item) && !item.videoDetail)) {
+      this.qs.bufferQueue = await pmap(
+        this.qs.bufferQueue,
+        async (item) => {
+          if (AppRecService.isNormalVideoFromFollowedUp(item) && !item.videoDetail) {
+            const { bvid } = normalizeCardData(item)
+            if (bvid) return { ...item, videoDetail: await getVideoDetail.queryCache(bvid) }
+          }
+          return item
+        },
+        100,
+      )
+    }
+  }
+
+  override get hasMore() {
+    return !!this.qs.bufferQueue.length || this.innerService.hasMore || this.otherTabServices.some((s) => s.hasMore)
+  }
+
+  override hasMoreExceptQueue = true
+
+  override fetchMore(abortSignal: AbortSignal): Promise<RecItemType[] | undefined> {
+    return this.config.addOtherTabContents
+      ? this._fetchWithOtherTabsChecked(abortSignal)
+      : this._fetchFromApi(abortSignal, 2)
+  }
+
+  private async _fetchWithOtherTabsChecked(abortSignal: AbortSignal) {
+    let items: RecItemType[] = []
+    // shuffle 需要大的数据量, 否则这一页全是一个 类型
+    while (this.hasMore && items.length < AppRecService.PAGE_SIZE * 3) {
+      const restServices = this.allServices.filter((s) => s.hasMore)
+      if (!restServices.length) break
+      const pickedServices = shuffle(restServices).slice(0, 3)
+      const more = (await Promise.all(pickedServices.map(async (s) => (await s.loadMore(abortSignal)) || [])))
+        .flat()
+        .filter((x) => x.api !== EApiType.Separator)
+      items.push(...more)
+      items = shuffle(items) // 我要验牌...
+    }
+    return items
+  }
+
+  private _fetchFromApi(abortSignal: AbortSignal, times: number) {
+    return this.innerService.getRecommendTimes(abortSignal, times)
+  }
+
+  // preload for filter
+  async preloadTimesFromApiIfNeeded(abortSignal: AbortSignal, times: number) {
+    if (this.qs.bufferQueue.length < AppRecService.PAGE_SIZE) {
+      this.qs.bufferQueue.push(...(await this._fetchFromApi(abortSignal, times)))
+    }
+  }
+
+  static isNormalVideo(item: AppRecItem) {
+    return item.goto === 'av'
+  }
+
+  // 已关注的 UP 的视频
+  static isNormalVideoFromFollowedUp(
+    item: RecItemType,
+    cardData?: IVideoCardData | undefined,
+  ): item is AppRecItemExtend {
+    return !!(
+      checkIsAppRecommend(item) &&
+      AppRecService.isNormalVideo(item) &&
+      (cardData ||= normalizeCardData(item)) &&
+      cardData &&
+      cardData.bvid &&
+      getFollowedStatus(cardData.recommendReason)
+    )
+  }
+}
+
+let idxOffset = 1
+
+class AppRecInnerService implements IService {
+  constructor(public anonymousFetch = false) {}
+
+  hasMore = true
+
+  private async getRecommend(abortSignal: AbortSignal) {
+    // NOTE: 这个 API 受参数控制, 大变形哦~
+    const res = await gmrequest.get('/x/v2/feed/index', {
+      signal: abortSignal,
+      timeout: 20_000,
+      responseType: 'json',
+      [anonymousFlag]: this.anonymousFetch,
+      params: {
+        actionKey: 'appkey',
+        platform: 'ios',
+        mobi_app: 'iphone',
+        device: 'pad',
+        build: '90300100',
+        c_locale: 'zh-Hans_CN',
+        s_locale: 'zh-Hans_CN',
+        // idx: 返回的 items.idx 为传入 idx+1, idx+2, ...
+        idx: Math.floor(Date.now() / 1000) + 100 * idxOffset++,
+      },
+    })
+    const json = res.data as ipad.AppRecommendJson
+
+    // request fail
+    if (!json.data) {
+      throw new Error('Request fail with none invalid json', {
+        cause: { type: 'invalid-json', statusCode: res.status, json },
+      })
+    }
+
+    const items = json?.data?.items || []
+    return items
+  }
+
+  loadMore(abortSignal: AbortSignal, times = 2) {
+    return this.getRecommendTimes(abortSignal, times)
+  }
+
+  // 一次不够, 多来几次
+  async getRecommendTimes(abortSignal: AbortSignal, times: number) {
+    let list: AppRecItem[] = (await Promise.all(range(times).map(() => this.getRecommend(abortSignal)))).flat()
+
+    // rm ad & unsupported card_type
+    list = list.filter((item) => {
+      // ad
+      if (item.card_goto?.includes('ad')) return false
+      if (item.goto?.includes('ad')) return false
+      if (item.ad_info) return false
+
+      // unsupported: bannner
+      // unsupported: live
+      if (item.card_goto === 'banner') return false
+      if (item.goto === 'live' || item.card_goto === 'live') return false
+
+      // 充电专属
+      // 特征: 没有 player_args
+      if (item.goto === 'av' && item.player_args === undefined) return false
+
+      return true
+    })
+
+    // unique in method level
+    list = uniqBy(list, (item) => item.param)
+
+    // add uuid
+    // add api
+    // add videoDetail (cache only)
+    const extendedList = await pmap(
+      list,
+      async (item) => {
+        let bvid: string | undefined
+        const videoDetail =
+          AppRecService.isNormalVideo(item) && (bvid = item.bvid || av2bv(Number(item.param)))
+            ? await getVideoDetail.queryCache(bvid)
+            : undefined
+        return {
+          ...item,
+          api: EApiType.AppRecommend,
+          uniqId: `${EApiType.AppRecommend}:${item.param}`,
+          videoDetail,
+        } satisfies AppRecItemExtend
+      },
+      10,
+    )
+
+    return extendedList
+  }
+}
+
+/**
+ * 已关注, 使用详情 API 补充时间
+ */
+export async function fetchAppRecommendFollowedPubDate(item: RecItemType, cardData: IVideoCardData) {
+  // no need
+  if (cardData.pubts) return
+  if (checkIsAppRecommend(item) && item.videoDetail?.pubdate) return item.videoDetail.pubdate
+  // entry check
+  if (!AppRecService.isNormalVideoFromFollowedUp(item, cardData)) return
+
+  if (!cardData.bvid) return // just for type safety
+  const detail = await getVideoDetail(cardData.bvid)
+  const ts = detail?.pubdate
+  return ts
+}

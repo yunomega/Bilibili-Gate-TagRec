@@ -1,0 +1,125 @@
+import { Result, type UnhandledException } from 'better-result'
+import { assert } from 'es-toolkit'
+import { HOST_APP } from '$common'
+import { checkIsAppRecommend, checkIsPcRecommend, type AppRecItem, type PcRecItem, type RecItemType } from '$define'
+import { antMessage } from '$modules/antd'
+import { gmrequest, handleRequestError, request, WebApiError } from '$request'
+import { assertNever } from '$utility/type'
+import { calcRecItemDislikedMapKey, delDisliked, dislikedMap } from '../store'
+import { normalizeDislikeReason, type DislikeReason } from '../types'
+import type { AxiosError } from 'axios'
+
+type Action = 'dislike' | 'cancel'
+
+/**
+ * 不喜欢 / 撤销不喜欢
+ * https://github.com/indefined/UserScripts/blob/master/bilibiliHome/bilibiliHome.API.md
+ *
+ * 此类内容过多 reason_id = 12
+ * 推荐过 reason_id = 13
+ */
+function appDislikeFactory(action: Action) {
+  const pathname = {
+    dislike: '/x/feed/dislike',
+    cancel: '/x/feed/dislike/cancel',
+  }[action]
+  return async function (
+    item: AppRecItem,
+    reasonId: number,
+  ): Promise<Result<string, AxiosError | UnhandledException | WebApiError>> {
+    return (
+      await gmrequest.safeGet(HOST_APP + pathname, {
+        responseType: 'json',
+        params: {
+          goto: item.goto,
+          id: item.param,
+
+          // mid: item.mid,
+          // rid: item.tid,
+          // tag_id: item.tag?.tag_id,
+          reason_id: reasonId,
+
+          // other stuffs
+          build: '1',
+          mobi_app: 'android',
+          idx: (Date.now() / 1000).toFixed(0),
+        },
+      })
+    )
+      .andThen((resp) => {
+        const actionText = (action === 'dislike' ? '提交' : '撤销') + '不喜欢失败'
+        return WebApiError.validateAxiosResponse(resp, actionText, '请重新获取 access_key 后重试!')
+      })
+      .andThen((json) => Result.ok(json?.message || ''))
+  }
+}
+export const appDislike = appDislikeFactory('dislike')
+export const appCancelDislike = appDislikeFactory('cancel')
+
+function pcDislikeFactory(action: Action) {
+  const pathname = {
+    dislike: '/x/web-interface/feedback/dislike',
+    cancel: '/x/web-interface/feedback/dislike/cancel',
+  }[action]
+  return async function (
+    item: PcRecItem,
+    reasonId: number,
+  ): Promise<Result<string, AxiosError | UnhandledException | WebApiError>> {
+    const form = new URLSearchParams({
+      app_id: '100',
+      platform: '5',
+      from_spmid: '',
+      spmid: '333.1007.0.0',
+      goto: item.goto,
+      id: item.id.toString() || '0',
+      mid: item.owner?.mid?.toString() || '0',
+      track_id: item.track_id,
+      feedback_page: '1',
+      reason_id: reasonId.toString(),
+    })
+    return (await request.safePost(pathname, form))
+      .andThen((resp) => WebApiError.validateAxiosResponse(resp))
+      .andThen((json) => Result.ok(json?.message))
+  }
+}
+export const pcDislike = pcDislikeFactory('dislike')
+export const pcCancelDislike = pcDislikeFactory('cancel')
+
+function handlerFactory(action: Action) {
+  return async function (item: RecItemType, reason: DislikeReason): Promise<boolean> {
+    const { reasonId } = normalizeDislikeReason(reason)
+    let result: Awaited<ReturnType<typeof appDislike>>
+    if (reason.platform === 'app') {
+      assert(checkIsAppRecommend(item), 'expect app recommend')
+      const fn = action === 'dislike' ? appDislike : appCancelDislike
+      result = await fn(item, reasonId)
+    } else if (reason.platform === 'pc') {
+      assert(checkIsPcRecommend(item), 'expect pc recommend')
+      const fn = action === 'dislike' ? pcDislike : pcCancelDislike
+      result = await fn(item, reasonId)
+    } else {
+      assertNever(reason)
+    }
+
+    if (result.isErr()) {
+      handleRequestError(result.error)
+      return false
+    }
+
+    // success
+    const dislikeKey = calcRecItemDislikedMapKey(item)
+    assert(dislikeKey, 'dislikeKey should not be empty')
+    if (action === 'dislike') {
+      antMessage.success('已标记不想看')
+      dislikedMap.set(dislikeKey, { ...reason })
+    }
+    if (action === 'cancel') {
+      antMessage.success('已撤销')
+      delDisliked(dislikeKey)
+    }
+    return true
+  }
+}
+
+export const handleDislike = handlerFactory('dislike')
+export const handleCancelDislike = handlerFactory('cancel')

@@ -1,0 +1,18 @@
+# Public source snapshots omit local agent setup and archived instructions.
+/.agents export-ignore
+/.codex export-ignore
+/archive export-ignore
+/skills-lock.json export-ignore
+# Minimal-exposure snapshot: editor prefs, internal ops docs, local debug tools.
+/.vscode export-ignore
+/docs/OPEN_SOURCE.md export-ignore
+/docs/RELEASING.md export-ignore
+/notes/release.md export-ignore
+/tools export-ignore
+# Internal process docs stay private: wayfinding tickets/maps, audit & design records.
+/docs/wayfinding export-ignore
+/docs/tag-rec-service-audit-2026-10-08.md export-ignore
+/docs/tag-discovery-design-review.md export-ignore
+/docs/combination-workbench.md export-ignore
+/src/modules/tag-rec/docs export-ignore
+/src/modules/tag-rec/CONTEXT.md export-ignore

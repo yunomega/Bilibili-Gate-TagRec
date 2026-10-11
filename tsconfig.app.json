@@ -1,0 +1,38 @@
+{
+  "include": ["src", "src/auto-imports.d.ts"],
+  "compilerOptions": {
+    "tsBuildInfoFile": "./node_modules/.tmp/tsconfig.app.tsbuildinfo",
+    "paths": {
+      "$*": ["./src/*"]
+    },
+    "target": "es2024",
+    "lib": [
+      "DOM",
+      "ES2024",
+      "ES2024.Promise", // Promise.withResolvers; Baseline 2024
+      "ESNext.Disposable", // DisposableStack; Stage 3; need polyfill
+      "ESNext.Collection" // Set.prototype.difference
+    ],
+    "module": "preserve",
+    "moduleDetection": "force",
+    "isolatedModules": true,
+    "strict": true,
+    "noImplicitOverride": true,
+    "skipLibCheck": true,
+    "types": [
+      "@total-typescript/ts-reset",
+      "vite/client",
+      "unplugin-icons/types/react",
+      "typed-query-selector",
+      "@violentmonkey/types" // "vite-plugin-monkey/global", has issue with GM.setClipboard API
+    ],
+    "jsx": "react-jsx",
+    "jsxImportSource": "@emotion/react",
+    "useDefineForClassFields": true,
+    "allowImportingTsExtensions": true,
+    "exactOptionalPropertyTypes": false, // 库(如 antd) 不支持
+    "noFallthroughCasesInSwitch": true,
+    "noEmit": true,
+    "plugins": [{ "name": "@styled/typescript-styled-plugin" }]
+  }
+}

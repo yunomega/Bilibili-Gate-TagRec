@@ -1,0 +1,63 @@
+/**
+ * https://ant.design/components/app-cn
+ */
+
+import { App, message, Modal, notification, type MenuProps } from 'antd'
+import { omit } from 'es-toolkit'
+import { useLayoutEffect } from 'react'
+import { $headerHeight } from '$header'
+import type { ConfigOptions as MessageConfigOptions, MessageInstance } from 'antd/es/message/interface'
+import type { HookAPI as ModalHookAPI } from 'antd/es/modal/useModal'
+import type { NotificationInstance } from 'antd/es/notification/interface'
+
+const messageConfig: MessageConfigOptions = {
+  // duration: default 3, 单位秒
+  maxCount: 5,
+  top: $headerHeight.get() - 4,
+}
+message.config(messageConfig)
+
+export function AntdStaticFunctionsSetup() {
+  const h = $headerHeight.use()
+  return (
+    <App message={{ ...messageConfig, top: h - 4 }}>
+      <SetupInner />
+    </App>
+  )
+}
+
+// 如果使用 message, notification 经常会自动从 antd import
+export let antStatic: ReturnType<typeof App.useApp>
+export let antMessage: MessageInstance = message
+export let antNotification: NotificationInstance = notification
+export let antModal: ModalHookAPI = Modal as any
+function SetupInner() {
+  const val = App.useApp()
+  useLayoutEffect(() => {
+    antStatic = val
+    antMessage = val.message
+    antNotification = val.notification
+    antModal = val.modal
+  }, [val])
+  return null
+}
+
+/**
+ * menu related (context menus / dropdown menus)
+ */
+
+export type AntMenuItem = NonNullable<NonNullable<MenuProps['items']>[number]>
+
+export type PossibleAntMenuItem = (AntMenuItem & { test?: boolean | (() => boolean) }) | false | undefined | null
+
+export function defineAntMenus(arr: PossibleAntMenuItem[]): AntMenuItem[] {
+  return arr
+    .filter(Boolean)
+    .filter((x) => {
+      if (x.test === undefined) return true
+      if (typeof x.test === 'boolean') return x.test
+      if (typeof x.test === 'function') return x.test() // no need for TypeScript, but stronger runtime logic
+      return Boolean(x.test)
+    })
+    .map((x) => omit(x, ['test']) as AntMenuItem)
+}

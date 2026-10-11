@@ -1,0 +1,56 @@
+import type { DynamicFeedItem } from './types'
+import type { MajorTypeArchive } from './types/module_dynamic.major/archive'
+
+export namespace DynamicFeedEnums {
+  // for `.type`
+  export enum ItemType {
+    Av = 'DYNAMIC_TYPE_AV',
+    Draw = 'DYNAMIC_TYPE_DRAW',
+    PgcUnion = 'DYNAMIC_TYPE_PGC_UNION',
+    UgcSeason = 'DYNAMIC_TYPE_UGC_SEASON',
+    Forward = 'DYNAMIC_TYPE_FORWARD',
+    Article = 'DYNAMIC_TYPE_ARTICLE',
+    Word = 'DYNAMIC_TYPE_WORD',
+    LiveRcmd = 'DYNAMIC_TYPE_LIVE_RCMD',
+  }
+
+  // for `.modules.module_author.type`
+  export enum AuthorType {
+    Normal = 'AUTHOR_TYPE_NORMAL',
+    Pgc = 'AUTHOR_TYPE_PGC',
+    UgcSeason = 'AUTHOR_TYPE_UGC_SEASON',
+  }
+
+  // for `.modules.module_dynamic.major.type`
+  export enum MajorType {
+    Archive = 'MAJOR_TYPE_ARCHIVE',
+    Opus = 'MAJOR_TYPE_OPUS',
+    Pgc = 'MAJOR_TYPE_PGC',
+    UgcSeason = 'MAJOR_TYPE_UGC_SEASON',
+    LiveRcmd = 'MAJOR_TYPE_LIVE_RCMD',
+  }
+
+  // for `.modules.module_dynamic.additional.type`
+  export enum AdditionalType {
+    Goods = 'ADDITIONAL_TYPE_GOODS',
+    Reserve = 'ADDITIONAL_TYPE_RESERVE',
+  }
+}
+
+export const DynamicFeedItemHelper = {
+  isVideo(item: DynamicFeedItem) {
+    const major = item.modules.module_dynamic.major
+    return major?.type === DynamicFeedEnums.MajorType.Archive
+  },
+  isTextOrImage(item: DynamicFeedItem) {
+    return (
+      item.modules.module_dynamic.major?.type === DynamicFeedEnums.MajorType.Opus ||
+      item.type === DynamicFeedEnums.ItemType.Forward // 转发也算图文
+    )
+  },
+  getVideo(item: DynamicFeedItem): MajorTypeArchive['archive'] | undefined {
+    const major = item.modules.module_dynamic.major
+    if (major?.type !== DynamicFeedEnums.MajorType.Archive) return
+    return major.archive
+  },
+}

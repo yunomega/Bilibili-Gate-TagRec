@@ -1,0 +1,118 @@
+import { Button } from 'antd'
+import { Panic, UnhandledException } from 'better-result'
+import { cloneDeep, isError } from 'es-toolkit'
+import { useMemo, type ReactNode } from 'react'
+import { AccessKeyManage } from '$components/AccessKeyManage'
+import { useLinkTarget } from '$components/VideoCard/use/useOpenRelated'
+import { EHotSubTab, ETab } from '$enums'
+import { AntdTooltip } from '$modules/antd/custom'
+import { IconForOpenExternalLink } from '$modules/icon'
+import { hotStore } from '$modules/rec-services/hot'
+import { WebApiError } from '$request'
+import { NeedValidAccessKeyError } from '$utility/app-api'
+import type { AxiosError } from 'axios'
+
+function isAxiosError(err: any): err is AxiosError {
+  return err instanceof Error && err.name === 'AxiosError'
+}
+
+function wrapWithParagraph(node: ReactNode) {
+  if (!node) return node
+  return <p className='mt-10px'>{node}</p>
+}
+
+function inspectErrDetail(err: any): ReactNode {
+  if (!err) return
+
+  if (!isError(err)) {
+    return wrapWithParagraph(JSON.stringify(err))
+  }
+
+  // unwrap better-result error when cause has a error stack
+  if ((UnhandledException.is(err) || Panic.is(err)) && isError(err.cause)) {
+    return inspectErrDetail(err.cause)
+  }
+
+  // errors
+  const errMessage: ReactNode = !!err.message && <>Error Message: {err.message}</>
+  const errStack: ReactNode = !!err.stack && (
+    <>
+      Error Stack: <br />
+      {err.stack}
+    </>
+  )
+
+  let errCause: ReactNode
+  let errAxiosErrorDetail: ReactNode
+
+  // add error cause
+  if (err.cause) {
+    errCause = <>Error Cause: {inspectErrDetail(err.cause)}</>
+  }
+
+  // if it's axios error
+  if (isAxiosError(err)) {
+    const _err = cloneDeep(err)
+    // hide sensitive access_key
+    if (_err.config?.params?.access_key) {
+      _err.config.params.access_key = '*'.repeat(_err.config.params.access_key.length)
+    }
+    errAxiosErrorDetail = <>axios config: {JSON.stringify(_err.config, null, 2)}</>
+  }
+
+  return (
+    <>
+      {wrapWithParagraph(errMessage)}
+      {wrapWithParagraph(errStack)}
+      {wrapWithParagraph(errCause)}
+      {wrapWithParagraph(errAxiosErrorDetail)}
+    </>
+  )
+}
+
+function getErrLabel(err: any): ReactNode {
+  if (err && err instanceof NeedValidAccessKeyError) return err.message
+  if (err && err instanceof WebApiError) return err.message
+  if (err && Panic.is(err)) return isError(err.cause) ? getErrLabel(err.cause) : err.message
+  return '出错了, 请刷新重试!'
+}
+
+export function ErrorDetail({ err, tab, onRetry }: { err: any; tab?: ETab; onRetry?: () => void }) {
+  const target = useLinkTarget()
+  const errLabel = useMemo(() => getErrLabel(err), [err])
+  const errDetail = useMemo(() => inspectErrDetail(err), [err])
+  return (
+    <div className='flex flex-col items-center gap-y-0.5em p-20px text-center text-size-20px'>
+      <AntdTooltip
+        title={
+          <div className='py-10px'>
+            <h3>错误详情</h3>
+            <div className='max-h-50vh overflow-hidden overflow-y-auto whitespace-pre-wrap break-normal'>
+              {errDetail}
+            </div>
+          </div>
+        }
+      >
+        <p className='flex cursor-pointer items-center justify-center'>
+          <IconTablerFaceIdError className='mr-4px' />
+          {errLabel}
+        </p>
+      </AntdTooltip>
+
+      {/* appendix */}
+      {tab === ETab.Hot && hotStore.subtab === EHotSubTab.PopularWeekly && (
+        <p className='mt-8px flex items-center justify-center'>
+          可能需手动输入验证码
+          <IconForOpenExternalLink className='ml-12px' />
+          <a href='https://www.bilibili.com/v/popular/weekly' target={target} className='ml-2px'>
+            每周必看
+          </a>
+        </p>
+      )}
+
+      {tab === ETab.Liked && err instanceof NeedValidAccessKeyError && <AccessKeyManage className='mt-0.5em' />}
+
+      <Button onClick={onRetry}>重试</Button>
+    </div>
+  )
+}

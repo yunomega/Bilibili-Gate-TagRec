@@ -1,0 +1,195 @@
+import { Result } from 'better-result'
+import { range, uniqBy } from 'es-toolkit'
+import { baseDebug } from '$common'
+import { explainForFlag } from '$components/ModalSettings/index.shared'
+import { CheckboxSettingItem } from '$components/ModalSettings/setting-item'
+import { useOnRefresh, type RefreshFn } from '$components/Recommends/rec.shared'
+import { PcRecGoto } from '$define/pc-recommend'
+import { EApiType } from '$enums'
+import { normalizeCardData } from '$modules/filter/normalize'
+import { useSettingsSnapshot } from '$modules/settings'
+import { isWebApiSuccess, request } from '$request'
+import { poll } from '$utility/dom'
+import toast from '$utility/toast'
+import { BaseTabService } from './_base'
+import type { PcRecItem, PcRecItemExtend, PcRecommendJson } from '$define'
+
+const debug = baseDebug.extend('modules:rec-services:pc')
+
+export const pcRecAnonymousFetchEl = (refresh?: RefreshFn, disabled?: boolean) => (
+  <CheckboxSettingItem
+    disabled={disabled}
+    configPath={'pcRecommend.anonymousFetch'}
+    label='匿名获取推荐'
+    tooltip={
+      <>
+        {explainForFlag('使用游客身份获取推荐', '使用登录身份获取个性化推荐')}
+        注意: 勾选时,「我不想看」之后还可能还会刷到!
+      </>
+    }
+    extraAction={() => refresh?.()}
+  />
+)
+
+function PcRecTabbarView() {
+  const onRefresh = useOnRefresh()
+  const { enableTabbarQuickSwitch } = useSettingsSnapshot().pcRecommend
+  return <>{enableTabbarQuickSwitch && pcRecAnonymousFetchEl(onRefresh)}</>
+}
+
+/**
+ * 使用 web api 获取推荐
+ *
+ * bili-feed4 首页
+ * API: /x/web-interface/wbi/index/top/feed/rcmd
+ * 同时会掺和
+ *  - 直播 https://api.live.bilibili.com/xlive/web-interface/v1/webMain/getMoreRecList
+ *  - PGC 内容
+ *    - https://api.bilibili.com/pgc/web/variety/feed?cursor=0&page_size=14&web_location=333.1007
+ *    - https://api.bilibili.com/pgc/web/timeline/v2?day_before=4&day_after=2&season_type=4&web_location=333.1007
+ *    - https://api.bilibili.com/pgc/web/timeline/v2?day_before=4&day_after=2&season_type=1&web_location=333.1007
+ */
+
+export type PcRecServiceConfig = {
+  isKeepFollowOnly: boolean
+  anonymousFetch: boolean
+}
+
+let idx = 0
+
+export class PcRecService extends BaseTabService<PcRecItemExtend> {
+  static PAGE_SIZE = 30 // 默认为 12, 留空即最大值为 30; 这里指定为 30
+
+  override get tabbarView() {
+    return this.isKeepFollowOnly ? undefined : <PcRecTabbarView />
+  }
+  override sidebarView = undefined
+  override hasMoreExceptQueue = true
+
+  static hasAuthedFetch = false
+  isFirstAuthedFetch = false
+
+  constructor(public config: PcRecServiceConfig) {
+    super(PcRecService.PAGE_SIZE)
+
+    const { isKeepFollowOnly, anonymousFetch } = config
+    const currentIsAuthedFetch = !isKeepFollowOnly && !anonymousFetch
+    if (currentIsAuthedFetch && !PcRecService.hasAuthedFetch) {
+      this.isFirstAuthedFetch = true
+      PcRecService.hasAuthedFetch = true
+    }
+  }
+
+  get isKeepFollowOnly() {
+    return this.config.isKeepFollowOnly
+  }
+
+  override fetchMore(abortSignal: AbortSignal): Promise<PcRecItemExtend[] | undefined> {
+    const times = this.isKeepFollowOnly ? 5 : 2
+    return this.getRecommendTimes(abortSignal, times)
+  }
+
+  // preload for filter
+  async preloadTimesFromApiIfNeeded(abortSignal: AbortSignal, times: number) {
+    if (this.qs.bufferQueue.length < PcRecService.PAGE_SIZE) {
+      this.qs.bufferQueue.push(...(await this.getRecommendTimes(abortSignal, times)))
+    }
+  }
+
+  // preload pc-initial items
+  async preloadPcInitialRecItems(abortSignal: AbortSignal) {
+    const initialItems = await getWebInitialRecommendItems(abortSignal)
+    this.qs.bufferQueue.push(...initialItems)
+  }
+
+  private getRecommendTimes = async (abortSignal: AbortSignal, times: number) => {
+    const list: PcRecItem[] = (await Promise.all(range(times).map(() => this.getRecommend(abortSignal)))).flat()
+    return processRawList(list)
+  }
+
+  private getRecommend = async (abortSignal: AbortSignal) => {
+    const currentIdx = ++idx // this has parallel call, can not ++ after success
+
+    // https://socialsisteryi.github.io/bilibili-API-collect/docs/video/recommend.html#获取首页视频推荐列表-web端
+    const url = '/x/web-interface/wbi/index/top/feed/rcmd'
+    const params = {
+      fresh_type: 8, // num	相关性	非必要	默认为 4, 值越大推荐内容越相关
+      fresh_idx_1h: currentIdx, // 匿名访问时 idx=1 总是返回一样的内容, 无法达成 "换一换" 的目的
+      fresh_idx: currentIdx,
+      ps: PcRecService.PAGE_SIZE,
+      web_location: 1430650,
+      feed_version: 'V8',
+      homepage_ver: 1,
+    }
+
+    const res = await request.get(url, {
+      params,
+      signal: abortSignal,
+      withCredentials: !this.config.anonymousFetch,
+    })
+    const json = res.data as PcRecommendJson
+
+    if (
+      !isWebApiSuccess(json) /** code: -62011, data: null, message: "暂时没有更多内容了", ttl: 1 */ &&
+      json.code === -62011 &&
+      json.message === '暂时没有更多内容了'
+    ) {
+      this.hasMoreExceptQueue = false
+      return []
+    }
+
+    if (!json.data?.item) {
+      toast(json.message || 'API 请求没有返回结果')
+    }
+    const items = json.data?.item || []
+    return items
+  }
+}
+
+function processRawList(list: PcRecItem[]): PcRecItemExtend[] {
+  const knownGotoSet = new Set([PcRecGoto.AV, PcRecGoto.Live, PcRecGoto.Ad])
+  list.forEach((item) => {
+    if (!knownGotoSet.has(item.goto)) {
+      debug('uknown goto from API: %s %o', item.goto, item)
+    }
+  })
+
+  const allowedGotoSet = new Set([PcRecGoto.AV])
+  list = list.filter((item) => allowedGotoSet.has(item.goto))
+  list = uniqBy(list, (item) => item.id)
+  // 推荐理由补全
+  list.forEach((item) => {
+    if (item.rcmd_reason?.reason_type === 1) {
+      item.rcmd_reason.content ||= '已关注'
+    }
+  })
+
+  const _list: PcRecItemExtend[] = list.map((item) => {
+    return {
+      ...item,
+      uniqId: `${EApiType.PcRecommend}:${item.bvid || item.room_info?.room_id || crypto.randomUUID()}`,
+      api: EApiType.PcRecommend,
+    }
+  })
+  return _list
+}
+
+async function getWebInitialRecommendItems(abortSignal: AbortSignal): Promise<PcRecItemExtend[]> {
+  // wait `window.__pinia`, then use `feed.data.recommend.item`
+  const __pinia = await poll(
+    () => {
+      const result = Result.try(() => (unsafeWindow as any).__pinia)
+      if (result.isOk()) return result.value
+    },
+    { interval: 100, timeout: 1_000, abortSignal },
+  )
+  const rawList: PcRecItem[] = __pinia?.feed?.data?.recommend?.item || []
+  debug('initial rec rawList: %o', rawList)
+
+  // 不可控, SSR 数据可能会变
+  return Result.try(() => {
+    const list = processRawList(rawList)
+    list.forEach((item) => normalizeCardData(item)) // try normalize
+    return list
+  }).unwrapOr([])
+}
