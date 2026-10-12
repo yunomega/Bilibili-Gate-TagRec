@@ -50,10 +50,11 @@ import { getColumnCount, useShortcut } from './useShortcut'
 import * as gridClassNames from './video-grid.module.scss'
 import type { ArgsProps } from 'antd/es/notification'
 import type { VideoCardEmitter, VideoCardEvents } from '$components/VideoCard/index.shared'
-import type { RecItemType, RecItemTypeOrSeparator } from '$define'
+import type { RecItemType, RecItemTypeOrSeparator, TagRecItemExtend } from '$define'
 import type { IVideoCardData } from '$modules/filter/normalize'
 import type { IService } from '$modules/rec-services/_base'
 import type { TagRecCustomService } from '$modules/tag-rec/service/tag-rec-custom'
+import type { TagRecFavService } from '$modules/tag-rec/service/tag-rec-fav'
 
 const debug = baseDebug.extend('components:RecGrid')
 
@@ -268,6 +269,8 @@ export const RecGrid = memo(function RecGrid({
     }
     return true
   })
+  /** 加载中收到的轻应用事件挂起标记: 本轮 loadMore 收尾时补应用 (在途追加的条目一并重滤, 不静默丢弃) */
+  const pendingSessionFilterApply = useRef(false)
   const loadMore = useMemoizedFn(async () => {
     if (!loadMorePrecheck()) return
 
@@ -302,6 +305,7 @@ export const RecGrid = memo(function RecGrid({
         startingRefreshKey,
       )
       self.unlock(startingRefreshKey)
+      pendingSessionFilterApply.current = false // 卸载/中止: 挂起项随实例作废 (重建会带新生效链)
       return
     }
     // loadMore 发出请求了, 但稍候重新刷新了, setItems 以及后续操作应该 abort
@@ -312,6 +316,7 @@ export const RecGrid = memo(function RecGrid({
         getRefreshKey(),
       )
       self.unlock(startingRefreshKey)
+      pendingSessionFilterApply.current = false // 已刷新重建: 挂起项由新 service 的构造期重滤覆盖
       return
     }
 
@@ -320,6 +325,7 @@ export const RecGrid = memo(function RecGrid({
       self.unlock(startingRefreshKey)
       antNotification.error({ title: '加载失败', description: err.message || err.stack })
       self.setStore({ loadMoreError: err })
+      consumePendingSessionFilterApply() // 挂起的过滤编辑仍要本地生效 (不被本轮失败吞掉)
       throw err
     }
 
@@ -327,6 +333,7 @@ export const RecGrid = memo(function RecGrid({
     debug('loadMore: loadedPage(%s) len(%s -> %s)', self.loadedPage, self.items.length, newItems.length)
     self.setStore({ hasMore: newHasMore, items: newItems })
     self.unlock(startingRefreshKey)
+    consumePendingSessionFilterApply()
     // check
     checkShouldLoadMore()
   })
@@ -390,8 +397,8 @@ export const RecGrid = memo(function RecGrid({
     continuationLock.current = true
     setContinuingDiscovery(true)
     try {
-      tagRecCustomSession.supplyPaused = false
-      service.retryPartitions()
+      if (!automatic) tagRecCustomSession.supplyPaused = false // 手动「继续」= 明令恢复取新; 自动续挖不动用户勾选
+      service.retryPartitions(!automatic) // 自动续批只清旗标 —— 停牌尝试账按复活冷却自清, 不每批归零架空上限
       if (tagRecCustomSession.digPending || !service.hasMore) await service.digMore(automatic)
       if (unmountedRef.current || self.abortController.signal.aborted || key !== self.refreshKey) return
       self.setStore({ hasMore: service.hasMore, loadMoreError: undefined })
@@ -404,6 +411,38 @@ export const RecGrid = memo(function RecGrid({
     }
   })
   useEmitterOn(recSharedEmitter, 'tag-rec:continue', () => continueDiscovery())
+  // [tag-rec] 临时过滤面板离场 => 轻应用: 重滤存货与已上屏条目并原位重展示 —— 不重建 service、不重拉;
+  //   核验/补货仍由后续 loadMore 常规管线承担 (队列有货则零请求)。
+  //   分隔符不保留: hasMore 已重开闸, 旧「见底」条失效 (真见底由下一轮 exhaustRound 复置)。
+  //   加载中收到事件 => 挂起到本轮 loadMore 收尾再应用 (不再静默丢弃; 在途追加的条目一并重滤)。
+  const applySessionFilterNow = useMemoizedFn(() => {
+    const service = serviceRegistry[tab] as TagRecCustomService | TagRecFavService | undefined
+    if (!service) return
+    if (!service.applySessionFilterLive()) return // 生效过滤未变 => 不重滤不重展示 (无效果编辑零画面变化)
+    const videos = self.items.filter((it): it is TagRecItemExtend => it.api === EApiType.TagRec)
+    self.setStore({
+      items: service.refilterDisplayed(videos),
+      // 过滤已变 => 「没有更多/加载失败」旧判据一并失效: 置真重开闸, 真见底/真失败由补页轮次复置
+      hasMore: true,
+      loadMoreError: undefined,
+    })
+    void loadMore().catch((e) => appError('tag-rec light apply reload failed', e))
+  })
+  const consumePendingSessionFilterApply = useMemoizedFn(() => {
+    if (!pendingSessionFilterApply.current) return
+    pendingSessionFilterApply.current = false
+    applySessionFilterNow()
+  })
+  useEmitterOn(recSharedEmitter, 'tag-rec:apply-session-filter', () =>
+    runEmitterListener(() => {
+      if (tab !== ETab.TagRecCustom && tab !== ETab.TagRecFav) return
+      if (self.loadMoreRunning || recSelf.refreshing) {
+        pendingSessionFilterApply.current = true
+        return
+      }
+      applySessionFilterNow()
+    }),
+  )
 
   // fullList = videoList + separators
   const fullList = items
@@ -622,14 +661,15 @@ export const RecGrid = memo(function RecGrid({
       continuingDiscovery ||
       loadMoreError ||
       refreshError ||
-      discoverySession.supplyPaused ||
-      (!discoverySession.partitionPaused && !discoverySession.digPending) ||
+      (!discoverySession.partitionPaused && !discoverySession.digPending && !discoverySession.digResumeAt) ||
       document.visibilityState !== 'visible' ||
       !nearDiscoveryEnd()
     )
       return
-    const wait = autoContinuation.delay(Date.now())
-    if (wait === undefined) return
+    // 深挖冷却到点前不空试: 排程等待 = 续批安静期 ∪ 休息/流冷却剩余
+    const quiet = autoContinuation.delay(Date.now())
+    if (quiet === undefined) return
+    const wait = Math.max(quiet, (discoverySession.digResumeAt ?? 0) - Date.now())
     const timer = setTimeout(() => {
       if (
         document.visibilityState !== 'visible' ||
@@ -659,9 +699,9 @@ export const RecGrid = memo(function RecGrid({
     continuingDiscovery,
     loadMoreError,
     refreshError,
-    discoverySession.supplyPaused,
     discoverySession.partitionPaused,
     discoverySession.digPending,
+    discoverySession.digResumeAt,
     items,
     autoContinuation,
     nearDiscoveryEnd,
@@ -694,7 +734,7 @@ export const RecGrid = memo(function RecGrid({
                 {discoverySession.supplyPaused
                   ? ' · 只浏览缓存'
                   : autoContinuation.stalled
-                    ? ' · 暂时没有新视频，自动发掘已暂停'
+                    ? ' · 暂时没有新视频，歇息片刻后自动续挖'
                     : continuingDiscovery
                       ? ' · 正在继续发掘…'
                       : discoverySession.partitionPaused

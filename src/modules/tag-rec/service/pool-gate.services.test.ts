@@ -154,7 +154,7 @@ describe.each(services)('$name pool gate integration', ({ Service, session }) =>
     favorites.list.push(a, b)
     tagRecCustomSession.selectedGroupIds = ['A', 'B']
     vi.mocked(fetchTagTop).mockResolvedValue(
-      Array.from({ length: 20 }, (_, i) => ({ bvid: `top-${i}`, title: 'video' })),
+      Array.from({ length: 32 }, (_, i) => ({ bvid: `top-${i}`, title: 'video' })),
     )
     const svc = new Service()
     const items = await svc.fetchMore(signal())

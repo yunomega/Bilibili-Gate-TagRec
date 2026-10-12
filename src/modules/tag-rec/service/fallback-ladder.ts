@@ -16,6 +16,7 @@ import {
   countCooccurDegree,
   deriveGroupCliques,
   DIG_RECOVERY_HALF_MS,
+  DIG_REST_MS,
   DIG_STREAM_WINDOW,
   digResumeFromSediment,
   newDigStream,
@@ -190,6 +191,11 @@ const LADDER_BOUNDS = {
   seedCount: [1, 10],
   seedMinScore: [0, 100],
   fallbackPage: [5, 50],
+  verifyRequests: [0, 200],
+  verifyCandidates: [10, 300],
+  verifyMs: [500, 60_000],
+  heldRetryQuota: [0, 20],
+  heldMaxAttempts: [1, 10],
 }
 const clampLadderNum = (k: keyof typeof LADDER_BOUNDS, v: number | undefined): number | undefined => {
   if (v === undefined) return undefined
@@ -197,7 +203,8 @@ const clampLadderNum = (k: keyof typeof LADDER_BOUNDS, v: number | undefined): n
   const [lo, hi] = LADDER_BOUNDS[k as keyof typeof LADDER_BOUNDS]
   return Math.min(hi, Math.max(lo, Math.round(v)))
 }
-function clampTagRecLadderOpts(o: Partial<TagRecLadderSettings>): Partial<TagRecLadderSettings> {
+export function clampTagRecLadderOpts(o: Partial<TagRecLadderSettings> | undefined): Partial<TagRecLadderSettings> {
+  o ??= {}
   const out: Partial<TagRecLadderSettings> = {}
   for (const k of Object.keys(LADDER_BOUNDS) as (keyof typeof LADDER_BOUNDS)[]) {
     const v = clampLadderNum(k, o[k])
@@ -206,13 +213,13 @@ function clampTagRecLadderOpts(o: Partial<TagRecLadderSettings>): Partial<TagRec
   return out
 }
 
-/** tab1 保守档 (= 票 13 现状): 仅干轮起梯队 + 自动深挖 K=3 转手动横幅 */
+/** tab1 保守档 (= 票 13 现状): 仅干轮起梯队 + 自动深挖到 K 转手动横幅 */
 export const FALLBACK_LADDER_STRATEGY_CONSERVATIVE: FallbackLadderStrategy = {
   triggerYield: 1,
   autoDig: { mode: 'fixed', max: TAG_REC_AUTO_DIG_MAX },
 }
 
-/** tab2 激进档 (票 17): 浅水位 <10 预挖 + 自适应无限深挖 (连续 2 轮 <3 条低产停) */
+/** tab2 激进档 (票 17): 浅水位预挖 + 自适应无限深挖 (低产连停) */
 export const FALLBACK_LADDER_STRATEGY_AGGRESSIVE: FallbackLadderStrategy = {
   triggerYield: TAG_REC_PREDIG_TRIGGER_YIELD,
   autoDig: {
@@ -279,6 +286,8 @@ export interface TagRecLadderSharedState {
   stockEpoch: number
   /** Explicit cursor resets invalidate pending page/probe commits, without discarding stock. */
   digCursorEpoch: number
+  /** 自动深挖休息截止刻 (0=未休息): 预算/低产/早停用尽不闩手动门, 到点懒恢复清零续挖 */
+  digResumeAt: number
 }
 
 /** 兜底堆写版本: heap 数组经 Proxy 拦写自增 —— bvid 懒索引的等长换血检出依据 */
@@ -312,6 +321,7 @@ export function newTagRecLadderState(): TagRecLadderSharedState {
     wordCursor: 0,
     wordWindow: new Set(),
     rechecks: new TagRecRecheckExecutor(),
+    digResumeAt: 0,
     epoch: 0,
     stockEpoch: 0,
     digCursorEpoch: 0,
@@ -336,6 +346,7 @@ export function resetTagRecLadderState(s: TagRecLadderSharedState, preserveBudge
   s.seedRequests.clear()
   s.seedScanCursor = 0
   s.producedTotal = 0
+  s.digResumeAt = 0
   // AUDIT-10/20: 语境换 => 轮转游标随盒清 (成员集变=切片语义变); digRunning 清位放新语境即刻开挖,
   //   在途旧 pass 的 .finally 有身份校验 (digPass) 不会误摘新 pass 的字段
   s.digRunning = undefined
@@ -456,6 +467,12 @@ export class TagRecFallbackLadder {
     return p.mode === 'fixed'
       ? { mode: 'fixed' as const, max: p.autoDigMax }
       : { mode: 'adaptive' as const, lowYield: p.lowYield, lowYieldStreakLimit: p.lowYieldStreakLimit }
+  }
+  private autoDigCapped() {
+    const p = this.autoPolicy()
+    return p.mode === 'fixed'
+      ? this.autoDigs >= (this.ladderOpts().autoDigMax ?? p.max)
+      : this.lowYieldStreak >= p.lowYieldStreakLimit
   }
 
   /** 只提升未交付原料；已看/已交付仍由原有去重阶段裁掉。 */
@@ -847,6 +864,7 @@ export class TagRecFallbackLadder {
     this.s.earlyStopped = false
     this.s.earlyStopReason = undefined
     this.s.lowYieldStreak = 0
+    this.s.digResumeAt = 0
   }
   // #endregion
 
@@ -856,11 +874,32 @@ export class TagRecFallbackLadder {
    *   三停共用 —— 零产出早停 (earlyStopped) / 风控退避 (tagRecBackoff) / 无流可挖;
    *   上限分策略 —— fixed: autoDigs<K; adaptive: 无硬顶, 低产连停 lowYieldStreakLimit 轮
    */
+  /** 自动续挖的最早到期刻 (休息截止 ∪ 流复探冷却; 0=无排程) —— 横幅/UI 排程依据。
+   *   停轮条件已立但截止未记时按「首次观测」惰性上膛 (幂等), 恢复排程不必等下一次 canAutoDig 判定;
+   *   全流挖穿 (无未竟流亦无复探冷却) 时陈旧休息位不排程 —— 免续批空转 */
+  resumeAt() {
+    let at = this.s.digResumeAt
+    if (!at && this.hasDueStreams() && (this.earlyStopped || this.autoDigCapped()))
+      at = this.s.digResumeAt = Date.now() + DIG_REST_MS
+    for (const s of this.s.streams.values()) if (s.retryAt && (!at || s.retryAt < at)) at = s.retryAt
+    if (at && !this.s.streams.values().some((s) => !s.exhausted || s.retryAt)) return 0
+    return at
+  }
   canAutoDig() {
-    if (this.earlyStopped || tagRecBackoff.isEngaged || !this.hasDueStreams()) return false
-    const p = this.autoPolicy()
-    if (p.mode === 'fixed') return this.autoDigs < (this.ladderOpts().autoDigMax ?? p.max)
-    return this.lowYieldStreak < p.lowYieldStreakLimit
+    if (tagRecBackoff.isEngaged || !this.hasDueStreams()) return false
+    const capped = this.autoDigCapped()
+    if (!capped && !this.earlyStopped) {
+      this.s.digResumeAt = 0
+      return true
+    }
+    if (!this.s.digResumeAt) this.s.digResumeAt = Date.now() + DIG_REST_MS
+    if (Date.now() < this.s.digResumeAt) return false
+    this.autoDigs = 0
+    this.lowYieldStreak = 0
+    this.earlyStopped = false
+    this.s.earlyStopReason = undefined
+    this.s.digResumeAt = 0
+    return true
   }
 
   /**

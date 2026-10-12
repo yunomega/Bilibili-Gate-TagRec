@@ -79,7 +79,7 @@ export function TagRecVideoMaterials() {
   const ui = useSnapshot(tagRecDiscoveryUi)
   const memory = useSnapshot(tagRecWorkbench)
   const { activeId } = memory
-  const { supplyPaused, workingGroup } = useSnapshot(tagRecCustomSession)
+  const { workingGroup } = useSnapshot(tagRecCustomSession)
   const workingCombination = workingGroup?.combination
   const globalBlocks = useSnapshot(tagRecCombinationBlocks)
   const favList = useSnapshot(favoritesStore).list
@@ -160,7 +160,7 @@ export function TagRecVideoMaterials() {
       active = false
       request.current?.abort()
     }
-  }, [ui.video, open, supplyPaused])
+  }, [ui.video, open])
   // 成本提示随视频/开关切换清空 (一次性反馈, 不跨语境滞留)
   useEffect(() => setCostHint(''), [ui.video, open])
   // 详情证据按需 (实修: 不为未点开的简介/名单预付一次 detail):
@@ -168,13 +168,13 @@ export function TagRecVideoMaterials() {
   //   tried 记本 BV 防「仍不完整」自触发循环, 手动「补齐」按钮不受此闸
   useEffect(() => {
     // 换视频的同一轮 effect 中 item 仍可能是上一条；等本条状态就位后才补查。
-    if (!open || !item || item.bvid !== ui.video?.bvid || supplyPaused || busy) return
+    if (!open || !item || item.bvid !== ui.video?.bvid || busy) return
     const needsTags = item.ownTagIds === undefined
     const needsDesc = tab === 'desc' && item.fieldEvidence?.desc !== 'complete'
     if ((!needsTags && !needsDesc) || evidenceTried.current === item.bvid) return
     evidenceTried.current = item.bvid
     void load(item)
-  }, [item, tab, open, ui.video?.bvid, supplyPaused, busy])
+  }, [item, tab, open, ui.video?.bvid, busy])
   // 行内使用数/缺 id 标签的实体: 「查看标签详情」展开才惰性补 tag/info (三级缓存, 首批 12 个);
   //   折叠态不预付 —— 名单本身来自本地持久化+自报, 解析动作另有 resolveTagEntry 兜底
   const ownTagNames = item?.ownTagNames
@@ -667,7 +667,7 @@ export function TagRecVideoMaterials() {
               完整标签待核实，其他字段可以先取。
             </Typography.Text>
           )}
-          {(error || supplyPaused || item?.ownTagIds === undefined) && retryEl}
+          {(error || item?.ownTagIds === undefined) && retryEl}
           {!tagMaterials.length && item?.ownTagIds !== undefined && (
             <Typography.Text type='secondary' style={{ fontSize: 12 }}>
               这条视频没有公开标签。
@@ -724,7 +724,7 @@ export function TagRecVideoMaterials() {
     {
       key: 'desc' as const,
       label: '简介',
-      children: textTab('desc', item?.desc ?? '', (error || supplyPaused) && item?.fieldEvidence?.desc !== 'complete'),
+      children: textTab('desc', item?.desc ?? '', error && item?.fieldEvidence?.desc !== 'complete'),
     },
   ]
 

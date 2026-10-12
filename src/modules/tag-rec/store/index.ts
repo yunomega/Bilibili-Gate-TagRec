@@ -1,10 +1,11 @@
 import { cloneDeep } from 'es-toolkit'
-import { proxy } from 'valtio'
+import { proxy, subscribe } from 'valtio'
 import { appWarn } from '$common'
 import { settings } from '$modules/settings'
 import { perfMark, perfMarkBytes } from '$utility/perf-mark' // [tag-rec] perf 票 01
 import toast from '$utility/toast'
 import { proxyMapWithGmStorageLazy, proxySetWithGmStorageLazy, proxyWithGmStorageLazy } from '$utility/valtio' // [tag-rec] perf 票 03: 同步骨架+后台水合变体, 模块图脱 TLA
+import { setTagRecSamplingView } from '../api/sampling-view'
 import {
   addTagRecCondition,
   excludeTagRecCondition,
@@ -99,6 +100,14 @@ const viewScopeStore = proxy(viewScopeInitial)
 const blacklistStoreLazy = proxyWithGmStorageLazy({ list: [] as TagBlacklistEntry[] }, 'tag-rec:blacklist')
 const sedimentPool = proxyMapWithGmStorageLazy<string, SedimentNode>('tag-rec:sediment')
 const seenPool = proxySetWithGmStorageLazy<string>('tag-rec:seen')
+
+// 采样视角 settings → api 层单向同步 (api 不 import settings 防模块环): 启动灌初值 + 变更随订
+setTagRecSamplingView(settings.tagRec?.samplingView)
+try {
+  subscribe(settings.tagRec, () => setTagRecSamplingView(settings.tagRec?.samplingView))
+} catch {
+  // 测试桩 settings 非 valtio proxy 时无订阅面, 启动值已灌
+}
 
 const favoritesStore = favoritesStoreLazy.proxy
 const favoritesL1Store = favoritesL1StoreLazy.proxy

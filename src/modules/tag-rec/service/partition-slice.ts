@@ -6,6 +6,9 @@ import { fetchTagRecVideoEvidence, getCachedTagRecVideoEvidence, mergeTagRecVide
 import { getPersistedVideoTags } from '../api/video-tags-store'
 import {
   evalTagRecItem,
+  TAG_REC_VERIFY_CANDIDATES,
+  TAG_REC_VERIFY_MS,
+  TAG_REC_VERIFY_REQUESTS,
   tagRecChainKeysOf,
   tagRecPoolsForChain,
   type TagRecFilterCtx,
@@ -133,7 +136,11 @@ export class TagRecPartitionBudget {
 
   constructor(
     private signal: AbortSignal,
-    private limits = { requests: 20, candidates: 40, ms: 5_000 },
+    private limits = {
+      requests: TAG_REC_VERIFY_REQUESTS,
+      candidates: TAG_REC_VERIFY_CANDIDATES,
+      ms: TAG_REC_VERIFY_MS,
+    },
   ) {
     if (signal.aborted) this.controller.abort()
     else signal.addEventListener('abort', this.onAbort, { once: true })

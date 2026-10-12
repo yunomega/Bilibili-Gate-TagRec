@@ -379,13 +379,13 @@ describe('$modules/tag-rec/service/tag-rec-custom 浅水位预挖 (票17 策略�
     expect(fetchVideoTagNames).not.toHaveBeenCalled()
   })
 
-  it('丰产轮 (产出 >=10): 不预挖 —— 阈值 triggerYield 守门', async () => {
+  it('丰产轮 (产出 >=30): 不预挖 —— 阈值 triggerYield 守门', async () => {
     const svc = new TagRecCustomService()
     tagRecCustomSession.expandedIds.push({ id: 7, name: 'foo' })
     ;(svc as any).ladder.addStream({ key: 'foo', keyword: 'foo', attribution: ['foo'] })
-    vi.mocked(fetchTagTop).mockResolvedValue(Array.from({ length: 12 }, (_, i) => ({ bvid: `BVt${i}` })))
+    vi.mocked(fetchTagTop).mockResolvedValue(Array.from({ length: 32 }, (_, i) => ({ bvid: `BVt${i}` })))
     const items = await svc.fetchMore(new AbortController().signal)
-    expect(items?.length).toBe(12)
+    expect(items?.length).toBe(32)
     // 票 32: 首载预热 (manual 档) 仍会后台挖一发; 判据是 auto 档未被消耗 (preDig/自动深挖未跑)
     expect((svc as any).ladder.autoDigs).toBe(0)
   })

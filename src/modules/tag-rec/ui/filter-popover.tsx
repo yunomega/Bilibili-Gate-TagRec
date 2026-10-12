@@ -2,7 +2,7 @@ import { Alert, Button, Popconfirm, Popover, Tag, theme, Typography } from 'antd
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { proxy, subscribe, useSnapshot } from 'valtio'
 import { usePopoverBorderColor } from '$common/emotion-css'
-import { useOnRefresh } from '$components/Recommends/rec.shared'
+import { useRecSelfContext } from '$components/Recommends/rec.shared'
 import { settings } from '$modules/settings'
 import { resolveTagRecEffective } from '../model/filter-engine'
 import {
@@ -36,7 +36,7 @@ export function FilterPopover({
   scope?: TagRecFilterSessionScope
 }) {
   const { token } = theme.useToken()
-  const onRefresh = useOnRefresh()
+  const { recSharedEmitter } = useRecSelfContext()
   const session = scope === 'fav' ? tagRecFavSession : tagRecCustomSession
   const sessionSnap = useSnapshot(session)
   const { filterOverride, tempWriteLog } = sessionSnap
@@ -123,7 +123,8 @@ export function FilterPopover({
     if (next) scrollRef.current?.scrollTo({ top: 0 })
     if (!next && dirtyRef.current) {
       dirtyRef.current = false
-      onRefresh('refresh') // 改会话过滤 => 重建 service (spec §4.4)
+      // 轻应用: 离场时一次性重滤现有存货与已上屏条目并原位重展示 —— 不重建 service、不重拉 (队列有货零请求)
+      void recSharedEmitter.emit('tag-rec:apply-session-filter')
     }
   }
 
@@ -133,7 +134,7 @@ export function FilterPopover({
     setMirrorEpoch((e) => e + 1) // 重建镜像 (跟随「标签过滤」)
     dirtyRef.current = false
     setOpen(false)
-    onRefresh('refresh')
+    void recSharedEmitter.emit('tag-rec:apply-session-filter') // 清除临时过滤同样走轻应用 (放宽后存货原位放行)
   }
 
   const content = (

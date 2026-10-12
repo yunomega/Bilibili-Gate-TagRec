@@ -1,5 +1,5 @@
 import { Button, Checkbox, Popover, Typography } from 'antd'
-import { useCallback, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useSnapshot } from 'valtio'
 import { modalSettingsStore, TabPaneKey } from '$components/ModalSettings/shared' // [tag-rec] 票 perf-08: 轻模块, 不拉 ModalSettings 图
 import { showModalSettings } from '$components/RecHeader/modals'
@@ -41,7 +41,25 @@ export function TagRecFavTabbarView({ service }: { service: TagRecFavService }) 
   const { scope, groupScope } = useSnapshot(viewScopeStore)
   const { tempEnabledL1Ids, tempEnabledGroupIds } = useSnapshot(tagRecSharedSession)
   const { tagRec } = useSettingsSnapshot()
-  const { drawnGroupNames, softBottom, bypassSeen } = useSnapshot(tagRecFavSession)
+  const { drawnGroupNames, softBottom, bypassSeen, digPending, digRunning } = useSnapshot(tagRecFavSession)
+
+  // 深挖待决自动续挖 (票 13 横幅按钮降级为「立即继续」加速器):
+  //   休息/流冷却到期后排一发 digMore; digTick 自续排程 —— 探针早退(休息上膛/无 due 流)不翻旗标也要再排
+  const [digTick, setDigTick] = useState(0)
+  useEffect(() => {
+    if ((!digPending && !service.digResumeAt()) || digRunning || document.visibilityState !== 'visible') return
+    const at = service.digResumeAt()
+    const delay = Math.min(Math.max((at || Date.now() + 60_000) - Date.now(), 10_000), 10 * 60_000)
+    const timer = setTimeout(() => {
+      void service
+        .digMore(true)
+        .then((y) => {
+          if (typeof y === 'number' && y > 0) void recSharedEmitter.emit('load-more')
+        })
+        .finally(() => setDigTick((tick) => tick + 1))
+    }, delay)
+    return () => clearTimeout(timer)
+  }, [digPending, digRunning, digTick, service, recSharedEmitter])
 
   const activePreset = tagRec.filter.activePreset
   // spec §5.2: chip 点击 => 打开设置 modal 并定位「标签过滤」pane

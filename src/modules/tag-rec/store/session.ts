@@ -208,6 +208,8 @@ export const tagRecCustomSession = proxy({
 
   /** [tag-rec] 深挖待决态镜像 (票 13: 自动深挖 K 用尽但流未尽 => 停自动加载待手动; 非硬见底, 横幅新态) */
   digPending: false,
+  /** 自动续挖最早到期刻镜像 (ladder.resumeAt: 休息截止∪流复探冷却; 0=无排程) —— RecGrid 续批排程订阅位 */
+  digResumeAt: 0,
   /** [tag-rec] 手动深挖在途标记 (横幅「继续深挖」按钮 loading/防重点) */
   digRunning: false,
 
@@ -266,6 +268,7 @@ function resetTagRecCustomQueryState(inputText: string) {
   tagRecCustomSession.expandedIds = []
   tagRecCustomSession.phase2 = { status: 'idle', pagesFetched: 0, exhausted: false, autoDigs: 0, lastDigYield: 0 }
   tagRecCustomSession.digPending = false
+  tagRecCustomSession.digResumeAt = 0 // 换查询语境 => 旧语境的休息/冷却排程作废
   tagRecCustomSession.digRunning = false
   tagRecCustomSession.softBottom = false
   tagRecCustomSession.hardBottom = false // [tag-rec]

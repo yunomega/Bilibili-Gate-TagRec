@@ -71,10 +71,10 @@ export function tagRecHoldReasonText(
   riskControl?: boolean,
 ): string | undefined {
   if (riskControl) return '风控退避中，分区核验已暂停 · 恢复后自动继续'
-  if (s.supplyPaused) return '「先看缓存」开着，已暂停取新与补查 · 取消勾选或点「重试核实」'
-  if (s.partitionBudgetExhausted) return '本轮补查额度用尽 · 点「重试核实」或下轮自动继续'
+  if (s.supplyPaused) return '「先看缓存」开着，已暂停取新 · 核验与深挖照常；恢复取新可取消勾选'
+  if (s.partitionBudgetExhausted) return '本轮补查额度用尽 · 已核实内容照常交付，后续自动续查'
   if ((s.partitionAbandoned ?? 0) > 0)
-    return `其中 ${s.partitionAbandoned} 条多轮未核实已暂停自动重试 · 可点「重试核实」再来一轮`
+    return `其中 ${s.partitionAbandoned} 条多轮未核实 · 已降频轮转重试，核实通过即自动放行`
   return undefined
 }
 

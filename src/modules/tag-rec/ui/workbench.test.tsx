@@ -7,7 +7,7 @@ import { stageTagRecMaterial, tagRecDiscoveryPreferences, tagRecDiscoveryUi } fr
 import { tagRecCustomSession } from '../store/session'
 import * as workbench from '../store/workbench'
 import { setTagRecWorkingPool } from './discovery-pools'
-import { TagRecWorkbenchView } from './workbench'
+import { cooccurEffectiveNextPage, TagRecWorkbenchView } from './workbench'
 import type { TagRecCustomService } from '../service/tag-rec-custom'
 
 vi.mock('$common', () => ({ appWarn: vi.fn(), APP_NAME: 'test', APP_NAMESPACE: 'test' }))
@@ -126,5 +126,26 @@ describe('真实工作台视图与试验条件连线', () => {
     tagRecCustomSession.partitionPending = 0
     expect(render()).toContain('恢复暂存')
     expect(JSON.stringify(tagRecCustomSession.workingGroup!.combination)).toBe(conditions)
+  })
+})
+
+describe('「继续挖共现」起跳页 (深挖游标共享, 不重复搜索同页)', () => {
+  it('无深挖记录 => 手动游标下一页', () => {
+    expect(cooccurEffectiveNextPage(0, undefined, '推子')).toBe(1)
+    expect(cooccurEffectiveNextPage(3, undefined, '推子')).toBe(4)
+  })
+  it('深挖已拉过前 N 页 => 从 N+1 起跳 (跳过已拉页)', () => {
+    expect(cooccurEffectiveNextPage(0, { keyword: '推子', nextPage: 7 }, '推子')).toBe(7)
+    expect(cooccurEffectiveNextPage(3, { keyword: '推子', nextPage: 7 }, '推子')).toBe(7)
+  })
+  it('手动游标已超深挖 => 取手动', () => {
+    expect(cooccurEffectiveNextPage(9, { keyword: '推子', nextPage: 7 }, '推子')).toBe(10)
+  })
+  it('同 norm 不同拼写 => 不跳过 (结果集不同)', () => {
+    expect(cooccurEffectiveNextPage(0, { keyword: 'BALDR SKY', nextPage: 9 }, 'BaldrSky')).toBe(1)
+  })
+  it('脏游标 => 回落手动', () => {
+    expect(cooccurEffectiveNextPage(2, { keyword: '推子', nextPage: NaN }, '推子')).toBe(3)
+    expect(cooccurEffectiveNextPage(2, { keyword: '推子', nextPage: 0 }, '推子')).toBe(3)
   })
 })

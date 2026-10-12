@@ -124,6 +124,7 @@ describe('audit: service contracts with real final strict slice', () => {
     tagRecFavSession.bypassSeen = false
     tagRecCustomSession.bypassSeen = false
     tagRecSharedSession.tempEnabledL1Ids = []
+    delete (settings.tagRec as Record<string, unknown>).ladder
     resetTagRecCustomSharedState()
     resetTagRecFavSharedState()
     vi.mocked(fetchTagInfoByName).mockReset().mockResolvedValue(undefined)
@@ -633,6 +634,7 @@ describe('audit: service contracts with real final strict slice', () => {
   }
 
   it('严格拒绝不占份额，严格通过的标签副本仍记账，补满后下一批保持混排', async () => {
+    ;(settings.tagRec as Record<string, unknown>).ladder = { verifyRequests: 20 }
     const svc = strictStockService()
     vi.mocked(fetchVideoTags).mockImplementation((bvid) =>
       Promise.resolve([{ tag_id: Number(bvid.split('-').at(-1)) < 10 ? 99 : 1, tag_name: 'checked' }]),
@@ -647,12 +649,12 @@ describe('audit: service contracts with real final strict slice', () => {
     expect(tagRecFavSession.filterStats.dropped).toBe(10)
     // 审计 §1: 严格核查并入整次刷新共享预算 —— 两次补位共 20 次核查耗尽额度后
     //   自动补位暂停待决 (旧契约: 每批自立时间盒, 外层可反复领额度无限补查)
-    expect(svc.autoLoadPaused).toBe(true)
-    expect(await svc.loadMore(signal())).toBeUndefined()
-    // 手动恢复 (横幅动作) => 新一轮预算照常核查+交付
+    expect(tagRecFavSession.partitionPaused).toBe(true)
+    // 停牌不再闩装载: 下一轮自立预算继续核查+交付 (无需手动恢复)
+    expect(deliveredCounts(await svc.loadMore(signal()))).toEqual({ A: 10, B: 10 })
     svc.retryPartitions()
     expect(deliveredCounts(await svc.loadMore(signal()))).toEqual({ A: 10, B: 10 })
-    expect(svc.qs.bufferQueue).toHaveLength(70) // 120 - 10拒绝 - 40交付
+    expect(svc.qs.bufferQueue).toHaveLength(50) // 120 - 10拒绝 - 60交付
     expect(fetchTagTop).not.toHaveBeenCalled()
   })
 

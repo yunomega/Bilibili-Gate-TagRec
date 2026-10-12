@@ -24,6 +24,7 @@ export function gmAnonGet(
   params: Record<string, unknown>,
   signal?: AbortSignal,
   cookie?: string,
+  anonymous = true,
 ): Promise<GmAnonResponse> {
   // 前置 abort 判 (AUDIT-18): 对已 aborted 的 signal 只挂 addEventListener 永不触发 => 孤儿请求照发烧配额
   if (signal?.aborted) return Promise.reject(new DOMException('Aborted', 'AbortError'))
@@ -62,7 +63,7 @@ export function gmAnonGet(
       handle = GM.xmlHttpRequest({
         method: 'GET',
         url,
-        anonymous: true,
+        anonymous, // false => 浏览器 cookie jar 随行 (用户账号视角/个性化); true => 零登录态公共池
         responseType: 'text',
         timeout: 15_000,
         headers: cookie ? { Cookie: cookie } : {},

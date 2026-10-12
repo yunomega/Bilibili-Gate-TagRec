@@ -1,12 +1,20 @@
 import { cloneDeep } from 'es-toolkit'
 import {
+  mergeTagRecCombinationFilters,
   newTagRecCombination,
+  seedTagRecCombination,
   tagRecCombinationSignature,
+  tagRecCombinationTagIds,
+  tagRecConditionAtom,
+  tagRecConditionAtomValueValid,
   tagRecConditionKey,
   validateTagRecCombination,
+  type TagRecCombination,
   type TagRecConditionAtom,
+  type TagRecConditionField,
 } from './combination'
 import {
+  dedupeTagIdEntries,
   groupNegativeTagIds,
   intersectCheck,
   makeTagGroup,
@@ -19,6 +27,7 @@ import {
   createTagRecFactoryDims,
   createTagRecFactoryFilterCore,
   createTagRecFactoryScoreParams,
+  groupNegativeMerged,
   migrateLegacyPartitionId,
   type TagRecDimsPatch,
   type TagRecFilterCore,
@@ -1009,6 +1018,96 @@ export function mergeTagRecConfigExports(datas: readonly TagRecConfigExportV1[])
 }
 
 /**
+ * 旧扁平组 (v1/v2 包或老导出) → 组合权威投影, 与 prepareTagRecWorkingGroup 同口径:
+ * 正向 tag_ids 进 include.tag 行; 负向并集 (groupNegativeMerged = 读期实际生效集, 含
+ * 顶层 negative_tag_ids 与 overrides.negative.tagIds 的双源合并及旧形 partition 折叠) 进 exclude;
+ * 仅看名单进 include 各 field 的 any 子组; overrides 非 negative 部分进 combination.filters。
+ * 返回 undefined = 升格不了, 调用侧须按扁平原样导入 (全有或全无, 不产半截组合):
+ *   - 任一条件原子不可表达 (死值不静默丢 —— 丢负向条件 = 查询放宽)
+ *   - 节点预算/合法性过不了 validateTagRecCombination
+ *   - merged.strict (negative_strict / overrides.negative.strict) 或名单级
+ *     tagBlock.strict / tagAllow.strict (negative-slice 逐条核查消费): 生效语义
+ *     无组合等价物 —— 折进 exclude 会让「必查」退成「待核实可放行」, 有损, 保扁平
+ * 注: 正负互斥镜像 makeTagGroup (负 tagIds 与正向同 id 者剔除, tagBlock 等名单不剔);
+ *   组合化后负向走 exclude 原子判定, 与读期 groupNegativeMerged 并集等效。
+ */
+export function upgradeTagRecGroupToCombination(input: {
+  tag_ids: readonly TagIdEntry[]
+  negative_tag_ids?: readonly TagIdEntry[]
+  negative_strict?: boolean
+  overrides?: TagGroup['overrides']
+}): TagRecCombination | undefined {
+  const neg = groupNegativeMerged({
+    overrides: input.overrides,
+    negative_tag_ids: input.negative_tag_ids ? [...input.negative_tag_ids] : undefined,
+    negative_strict: input.negative_strict,
+  } as TagGroup)
+  if (neg.strict || neg.tagBlock?.strict || neg.tagAllow?.strict) return undefined
+  const combination = newTagRecCombination()
+  // 播种前去重 (镜像 makeTagGroup): 原包偶发重复 id 不该让整组升格失败 —— seed 对重复键返回 false
+  if (!seedTagRecCombination(combination, dedupeTagIdEntries(input.tag_ids))) return undefined
+  const atoms = (field: TagRecConditionField, values: readonly unknown[]) => {
+    const out: TagRecConditionAtom[] = []
+    for (const value of values) {
+      if (!tagRecConditionAtomValueValid({ field, value })) return undefined
+      out.push(tagRecConditionAtom(field, value as never))
+    }
+    return out
+  }
+  const posIds = new Set(input.tag_ids.map((e) => e.id))
+  const excludeRows: [TagRecConditionField, readonly unknown[]][] = [
+    ['tag', (neg.tagIds ?? []).filter((e) => !posIds.has(e.id))],
+    ['tag', neg.tagBlock?.enabled ? neg.tagBlock.list : []],
+    ['up', neg.up ?? []],
+    ['title', neg.title ?? []],
+    ['desc', neg.desc ?? []],
+    ['partition', neg.partitionBlock ?? []],
+  ]
+  const seenExcludes = new Set(combination.exclude.map((a) => tagRecConditionKey(a)))
+  for (const [field, values] of excludeRows) {
+    const built = atoms(field, values)
+    if (!built) return undefined
+    for (const atom of built) {
+      const key = tagRecConditionKey(atom)
+      if (seenExcludes.has(key)) continue
+      seenExcludes.add(key)
+      combination.exclude.push(atom)
+    }
+  }
+  const allowRows: [TagRecConditionField, readonly unknown[]][] = [
+    ['tag', neg.tagAllow?.enabled ? neg.tagAllow.list : []],
+    ['up', neg.upAllow?.enabled ? neg.upAllow.list : []],
+    ['title', neg.titleAllow?.enabled ? neg.titleAllow.list : []],
+    ['desc', neg.descAllow?.enabled ? neg.descAllow.list : []],
+    ['partition', neg.partitionAllow?.enabled ? neg.partitionAllow.list : []],
+  ]
+  for (const [field, values] of allowRows) {
+    const built = atoms(field, values)
+    if (!built) return undefined
+    const seen = new Set<string>()
+    const children = built.filter((atom) => !seen.has(tagRecConditionKey(atom)) && seen.add(tagRecConditionKey(atom)))
+    if (children.length)
+      combination.include.children.push({
+        kind: 'group',
+        id: crypto.randomUUID(),
+        mode: 'any',
+        name: field,
+        children,
+      })
+  }
+  const { negative: _negative, ...filters } = input.overrides ?? {}
+  if (Object.keys(filters).length)
+    combination.filters = mergeTagRecCombinationFilters(
+      { ...filters, dims: (filters as { dims?: object }).dims ?? {} },
+      combination.filters,
+    )
+  // 投影成员 (含仅看 tag 原子) 超集市单组 tag_ids 闸 100 => 升级后该组永远分享不出去,
+  //   保扁平维持可分享 (worker 迁移端同闸; SHARE_GUARD_LIMITS.MAX_TAG_IDS_PER_GROUP)
+  if (tagRecCombinationTagIds(combination).length > 100) return undefined
+  return validateTagRecCombination(combination) ? combination : undefined
+}
+
+/**
  * JSON 导入计划 (纯函数):
  * - 主题 (票 26): 每条经 makeTagTheme 规范化 (空名弃) 保 id+addedAt;
  *   id 撞车 (已在表内 / 本批重复) => 复用既有主题不重复建 (容器幂等);
@@ -1116,14 +1215,27 @@ export function planTagRecImport(
   for (const raw of data.favorites) {
     // 归属对回: 节内映射优先, 次认表内既有 L1 id (文件指认已存在容器的合流场景), 余者悬挂不携
     const l1Id = raw.l1Id ? (l1IdRemap.get(raw.l1Id) ?? (claimedL1Ids.has(raw.l1Id) ? raw.l1Id : undefined)) : undefined
+    const overrides = normalizeTagRecGroupOverrides(raw.overrides)
+    // 旧扁平包升格 (v1/v2): combination 缺位时按投影规则整体转组合权威 ——
+    //   返回 undefined 的组 (超预算/strict 无等价物/原子不可表达) 保扁平原样入表,
+    //   legacy 槽位原样传给 makeTagGroup, 不留双轨各执一词的中间态
+    const upgraded =
+      raw.combination === undefined
+        ? upgradeTagRecGroupToCombination({
+            tag_ids: raw.tag_ids,
+            negative_tag_ids: raw.negative_tag_ids,
+            negative_strict: raw.negative_strict,
+            overrides,
+          })
+        : undefined
     const g = makeTagGroup({
       id: raw.id,
       name: raw.name,
       tag_ids: raw.tag_ids,
-      negative_tag_ids: raw.negative_tag_ids,
-      negative_strict: raw.negative_strict,
-      overrides: normalizeTagRecGroupOverrides(raw.overrides),
-      combination: raw.combination,
+      negative_tag_ids: upgraded ? undefined : raw.negative_tag_ids,
+      negative_strict: upgraded ? undefined : raw.negative_strict,
+      overrides: upgraded ? undefined : overrides,
+      combination: raw.combination ?? upgraded,
       weight: raw.weight,
       enabled: raw.enabled,
       note: raw.note,

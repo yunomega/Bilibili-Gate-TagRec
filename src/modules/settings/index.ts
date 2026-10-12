@@ -19,6 +19,11 @@ import {
 import {
   createTagRecBuiltinPresets,
   migrateLegacyPartitionId,
+  TAG_REC_HELD_MAX_ATTEMPTS,
+  TAG_REC_HELD_RETRY_QUOTA,
+  TAG_REC_VERIFY_CANDIDATES,
+  TAG_REC_VERIFY_MS,
+  TAG_REC_VERIFY_REQUESTS,
   type TagRecSettingsSection,
 } from '$modules/tag-rec/model/filter-engine' // [tag-rec]
 import {
@@ -43,12 +48,13 @@ const debug = baseDebug.extend('settings')
  */
 const tagRecInitialPresets = createTagRecBuiltinPresets()
 const tagRecInitialSettings: TagRecSettingsSection = {
-  defaultsVersion: 2,
+  defaultsVersion: 3,
   k: 3, // 收藏推荐每次预取的一级组上限，可调 1~10
   seenCap: 2000, // seen-set FIFO 容量, 可调 (消费归票 08)
   showAttributionBadge: true, // 归因徽章(来源组名)默认开; 关=卡片不写组名
   customTabSeen: false, // 「标签发掘」tab 内联红点: 激活一次即置位永不再现 (tab 栏发现引导, 非面板项)
   riskLog: { enabled: true }, // [tag-rec] 风控命中观测记录器 (票 10/11): 命中才写, 常态零成本
+  samplingView: 'public', // 采样视角默认公共池; 'account' 切用户 cookie 画像视角
   // 多样性护栏: 单组占比默认 60%, 单 UP 每屏最多 4 条, 两轴默认开启。
   diversityGuard: {
     group: { enabled: true, maxShare: 0.6 },
@@ -56,6 +62,7 @@ const tagRecInitialSettings: TagRecSettingsSection = {
   },
   // 梯队高级参数 (票10): 语境级共享态 => 全局块, 按治理池分档 (搜索池档 / 相关池档)
   ladder: {
+    mode: 'fixed',
     triggerYield: TAG_REC_PREDIG_TRIGGER_YIELD,
     autoDigMax: TAG_REC_AUTO_DIG_MAX,
     digStreamWindow: DIG_STREAM_WINDOW,
@@ -63,6 +70,11 @@ const tagRecInitialSettings: TagRecSettingsSection = {
     seedCount: TAG_REC_SEED_COUNT,
     seedMinScore: TAG_REC_SEED_MIN_SCORE,
     fallbackPage: TAG_REC_FALLBACK_PAGE,
+    verifyRequests: TAG_REC_VERIFY_REQUESTS,
+    verifyCandidates: TAG_REC_VERIFY_CANDIDATES,
+    verifyMs: TAG_REC_VERIFY_MS,
+    heldRetryQuota: TAG_REC_HELD_RETRY_QUOTA,
+    heldMaxAttempts: TAG_REC_HELD_MAX_ATTEMPTS,
   },
   filter: {
     // 首次安装选「淘沙」，生效配置与内置预设的快照各自独立。
@@ -673,6 +685,19 @@ export function runSettingsMigration(val: object | undefined) {
       const ladder = tagRec.ladder as Record<string, unknown> | undefined
       if (ladder?.seedMinScore === 30) ladder.seedMinScore = 0
       tagRec.defaultsVersion = 2
+    }
+    if (Number(tagRec.defaultsVersion ?? 0) < 3) {
+      const ladder = tagRec.ladder as Record<string, unknown> | undefined
+      if (ladder) {
+        if (ladder.mode === undefined) ladder.mode = 'fixed'
+        if (ladder.triggerYield === 10) ladder.triggerYield = 30
+        if (ladder.autoDigMax === 3) ladder.autoDigMax = 20
+        if (ladder.seedPoolMax === 12) ladder.seedPoolMax = 100
+        if (ladder.seedCount === 3) ladder.seedCount = 10
+        if (ladder.fallbackPage === 20) ladder.fallbackPage = 50
+        if (ladder.emptyTtlMinutes === 60) ladder.emptyTtlMinutes = 5
+      }
+      tagRec.defaultsVersion = 3
     }
   }
 }

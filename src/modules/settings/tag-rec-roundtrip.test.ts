@@ -58,7 +58,13 @@ describe('audit: settings persistence boundary', () => {
       true,
     )
     expect(loaded.tagRec?.ladder?.seedMinScore).toBe(0)
-    expect(loaded.tagRec?.defaultsVersion).toBe(2)
+    expect(loaded.tagRec?.ladder?.triggerYield).toBe(30)
+    expect(loaded.tagRec?.ladder?.autoDigMax).toBe(20)
+    expect(loaded.tagRec?.ladder?.seedPoolMax).toBe(100)
+    expect(loaded.tagRec?.ladder?.seedCount).toBe(10)
+    expect(loaded.tagRec?.ladder?.fallbackPage).toBe(50)
+    expect(loaded.tagRec?.ladder?.mode).toBe('fixed')
+    expect(loaded.tagRec?.defaultsVersion).toBe(3)
     // 已升级后重新手动设置的同值阈值也不能再次被迁移。
     saved.tagRec.filter.dims.likeRate.enabled = true
     const reloaded = await loadSettingsFromGmStorage()

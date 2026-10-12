@@ -27,6 +27,7 @@ vi.mock('./backoff', async () => {
     RiskControlError,
     tagRecLimit: pLimit(4),
     allV2Limit: <T>(run: () => Promise<T>) => run(),
+    tagRecSearchGate: { acquire: () => Promise.resolve(), reset: () => undefined },
     isRiskControlError: (error: unknown) => error instanceof RiskControlError,
     isRiskControlResponse: (response: { status: number }) => response.status === 412,
     tagRecBackoff: {

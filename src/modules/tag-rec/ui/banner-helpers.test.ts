@@ -154,15 +154,15 @@ describe('票 006 停牌原因文案 (tagRecHoldReasonText)', () => {
     expect(text).toContain('先看缓存')
     expect(text).toContain('取消')
   })
-  it('额度用尽: 点「重试核实」或下轮自动继续 (评审补漏)', () => {
+  it('额度用尽: 已核实的照常交付，后续自动续查', () => {
     const text = tagRecHoldReasonText({ partitionBudgetExhausted: true })
     expect(text).toContain('额度')
-    expect(text).toContain('重试核实')
+    expect(text).toContain('自动')
   })
-  it('放弃计数: 多轮未核实已停自动重试 + 指路重试核实', () => {
+  it('放弃计数: 多轮未核实降频轮转，核实通过自动放行', () => {
     const text = tagRecHoldReasonText({ partitionAbandoned: 3 })
     expect(text).toContain('3')
-    expect(text).toContain('重试核实')
+    expect(text).toContain('自动')
   })
   it('无闸无放弃 => undefined (不编造原因)', () => {
     expect(tagRecHoldReasonText({})).toBeUndefined()

@@ -11,7 +11,7 @@ import {
 import { tagRecRecallScheduler } from '../api/recall-scheduler'
 import { persistVideoTags } from '../api/video-tags-store'
 import { addTagRecCondition, newTagRecCombination, tagRecConditionAtom } from '../model/combination'
-import { TAG_REC_AUTO_DIG_MAX } from '../model/dig'
+import { DIG_REST_MS, TAG_REC_AUTO_DIG_MAX } from '../model/dig'
 import { makeTagGroup } from '../model/favorites'
 import {
   createTagRecFactoryFilterCore,
@@ -179,7 +179,10 @@ describe('$modules/tag-rec/service/fallback-ladder (票13)', () => {
     core.dims.likeRate.enabled = false
     core.dims.titleKeywords = { enabled: true, list: ['blocked'] }
     const resolve = createTagRecScopeResolver({ core })
-    const { ladder } = mk({ applyStages: (items, ctx) => runTagRecFilter(items, { resolve, ...ctx }).items })
+    const { ladder } = mk(
+      { applyStages: (items, ctx) => runTagRecFilter(items, { resolve, ...ctx }).items },
+      { triggerYield: 1, autoDig: { mode: 'fixed', max: 3 }, ladder: () => ({ fallbackPage: 20 }) },
+    )
     ladder.heap.push(
       ...Array.from({ length: 20 }, (_, i) => ({
         ...heapItem(`first${i}`),
@@ -304,7 +307,7 @@ describe('$modules/tag-rec/service/fallback-ladder (票13)', () => {
 
     // manual 不计 autoDigs; 产出>0 不解除 earlyStopped 但 manual 不受限
     sediment.map.clear() // 票 36: 上一梯队的 exhausted 游标已落盘 —— 本子场景独立计数以净池起步
-    const { ladder: l2 } = mk()
+    const { ladder: l2 } = mk({}, { triggerYield: 1, autoDig: { mode: 'fixed', max: 3 } })
     l2.addStream({ key: 'a', keyword: 'A', attribution: ['A'] })
     for (let i = 0; i < 3; i++) {
       vi.mocked(fetchAllV2Search).mockResolvedValueOnce([video(`B${i}`)])
@@ -322,6 +325,28 @@ describe('$modules/tag-rec/service/fallback-ladder (票13)', () => {
     ;(tagRecBackoff as { isEngaged: boolean }).isEngaged = true
     expect(l3.canAutoDig()).toBe(false)
     await expect(l3.digPass('manual')).resolves.toBeTypeOf('number') // manual 不受风控门
+  })
+
+  it('D4 休息排程: 停轮条件立起即 resumeAt 惰性上膛 (幂等), 到期 canAutoDig 清零续挖', async () => {
+    const { ladder } = mk({}, { triggerYield: 1, autoDig: { mode: 'fixed', max: 3 } })
+    ladder.addStream({ key: 'a', keyword: 'A', attribution: ['A'] })
+    for (let i = 0; i < 3; i++) {
+      vi.mocked(fetchAllV2Search).mockResolvedValueOnce([video(`B${i}`)])
+      await ladder.digPass('auto')
+    }
+    const now = Date.now()
+    const at = ladder.resumeAt() // 惰性上膛: 未经任何 canAutoDig 判定, 首次读即记截止
+    expect(at).toBeGreaterThanOrEqual(now + DIG_REST_MS - 1_000)
+    expect(ladder.resumeAt()).toBe(at) // 幂等: 二次读取不重上膛
+    expect(ladder.canAutoDig()).toBe(false) // 休息未到期 (判定不改动已记截止)
+    try {
+      vi.useFakeTimers()
+      vi.setSystemTime(at + 1)
+      expect(ladder.canAutoDig()).toBe(true) // 到期自动清零续挖
+      expect(ladder.resumeAt()).toBe(0)
+    } finally {
+      vi.useRealTimers()
+    }
   })
 
   it('digPass: 流 exhausted = 空页到底, 不再参与后续 dig', async () => {
@@ -368,12 +393,15 @@ describe('$modules/tag-rec/service/fallback-ladder (票13)', () => {
   // #region D3 兜底堆分批放行
   it('releasePage: 堆按分排序放行一页 (<=20), 阶段管线过手', () => {
     const staged: string[] = []
-    const { ladder } = mk({
-      applyStages: (items) => {
-        staged.push(...items.map((x) => x.bvid))
-        return items.filter((x) => x.bvid !== 'drop')
+    const { ladder } = mk(
+      {
+        applyStages: (items) => {
+          staged.push(...items.map((x) => x.bvid))
+          return items.filter((x) => x.bvid !== 'drop')
+        },
       },
-    })
+      { triggerYield: 1, autoDig: { mode: 'fixed', max: 3 }, ladder: () => ({ fallbackPage: 20 }) },
+    )
     const heapItem = (bvid: string, score: number): TagRecItemExtend => ({
       api: EApiType.TagRec,
       uniqId: `tag-rec:${bvid}`,
@@ -636,7 +664,7 @@ describe('$modules/tag-rec/service/fallback-ladder (票13)', () => {
 
   // #region D1 梯队编排
   it('runLadder: 干轮 => 自动深挖落货放行; K耗尽+流未尽 => 手动待决; 全尽+堆光 => 硬见底', async () => {
-    const { ladder, queue } = mk()
+    const { ladder, queue } = mk({}, { triggerYield: 1, autoDig: { mode: 'fixed', max: 3 } })
     ladder.addStream(inputStream())
 
     // K=3 次自动深挖: 每次产 1 条 related => 放行, 流未尽
@@ -734,22 +762,23 @@ describe('$modules/tag-rec/service/fallback-ladder (票13)', () => {
   // #endregion
 
   // #region 票 17 策略分家: 缺省 = tab1 保守等价
-  it('策略缺省 = tab1 保守: triggerYield=1 + fixed K=3 (票 13 行为等价)', async () => {
-    const { ladder, queue } = mk()
+  it('策略缺省 = tab1 保守: triggerYield=1 + fixed K 上限 (票 13 行为等价)', async () => {
+    const { ladder } = mk()
     expect(ladder.strategy).toEqual(FALLBACK_LADDER_STRATEGY_CONSERVATIVE)
     expect(ladder.strategy.triggerYield).toBe(1) // 语义等价「仅干轮」: 产出<1 才介入
     expect(ladder.strategy.autoDig).toEqual({ mode: 'fixed', max: TAG_REC_AUTO_DIG_MAX })
 
-    // fixed 档与票 13 同路径: 3 发后 canAutoDig 关闸 (adaptive 低产计数不参判, 恒 0)
-    ladder.addStream(inputStream())
+    // fixed 档与票 13 同路径: K 发后 canAutoDig 关闸 (adaptive 低产计数不参判, 恒 0)
+    const { ladder: l2, queue: q2 } = mk({}, { triggerYield: 1, autoDig: { mode: 'fixed', max: 3 } })
+    l2.addStream(inputStream())
     for (let i = 0; i < 3; i++) {
-      queue.length = 0
+      q2.length = 0
       vi.mocked(fetchAllV2Search).mockResolvedValueOnce([video(`K${i}`, 'demonsroots')])
-      await ladder.runLadder({})
+      await l2.runLadder({})
     }
-    expect(ladder.autoDigs).toBe(3)
-    expect(ladder.lowYieldStreak).toBe(0)
-    expect(ladder.canAutoDig()).toBe(false)
+    expect(l2.autoDigs).toBe(3)
+    expect(l2.lowYieldStreak).toBe(0)
+    expect(l2.canAutoDig()).toBe(false)
   })
   // #endregion
 
@@ -827,7 +856,7 @@ describe('$modules/tag-rec/service/fallback-ladder (票13)', () => {
       const r = await ladder.runLadder({})
       expect(r.kind).toBe('items')
     }
-    expect(ladder.autoDigs).toBe(4) // > fixed K=3 —— adaptive 无硬顶的证据
+    expect(ladder.autoDigs).toBe(4) // adaptive 无硬顶: 丰产即续挖
     expect(ladder.lowYieldStreak).toBe(0)
     expect(ladder.canAutoDig()).toBe(true) // 有产出就继续
   })
@@ -921,7 +950,15 @@ describe('$modules/tag-rec/service/fallback-ladder (票13)', () => {
   // #region 票 32: 选种扫描 cap12 (池内 score 前 12)
   it('maybeSeedRelated: 未知标签限量轮转扫描，质量高低不影响获取标签的资格', async () => {
     const shared = newTagRecLadderState()
-    const { ladder, seenBvids } = mk({}, undefined, shared)
+    const { ladder, seenBvids } = mk(
+      {},
+      {
+        triggerYield: 1,
+        autoDig: { mode: 'fixed', max: 3 },
+        ladder: () => ({ seedPoolMax: 12, seedCount: 3 }),
+      },
+      shared,
+    )
     sediment.map.set('a', { variants: [], cooccur: { x1: { count: 1, exampleBvids: [], lastSeen: 0 } }, lastSeen: 0 })
     ladder.addStream({ key: 'a', keyword: 'A', attribution: ['A'] })
     const richStat = (view: number): TagRecItemExtend['stat'] => ({

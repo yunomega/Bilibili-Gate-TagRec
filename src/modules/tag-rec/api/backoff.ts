@@ -1,5 +1,6 @@
 import { isAxiosError } from 'axios'
 import { pLimit } from 'promise.map'
+import { abortableDelay } from './abortable-delay'
 
 /**
  * [tag-rec] 节流与退避 (spec §2.3)
@@ -292,8 +293,9 @@ export class BackoffGate {
     this.polite = true
     this.successStreak = 0
     this.hits += 1
+    // 连续退避逐级加深: 第 2 次直接跳 30s 档, 第 3 次起 60s —— 更快进入低负载平稳态
     this.intervalMs = this.engaged
-      ? Math.min(this.intervalMs * 2, BackoffGate.MAX_INTERVAL_MS)
+      ? Math.min(Math.max(this.intervalMs * 2, 30_000), BackoffGate.MAX_INTERVAL_MS)
       : BackoffGate.BASE_INTERVAL_MS
     this.engaged = true
     if (Number.isFinite(retryAfterMs) && retryAfterMs > 0)
@@ -303,8 +305,45 @@ export class BackoffGate {
   }
 }
 
+/**
+ * [tag-rec] search 专用滑动窗平滑器: 收敛连续深挖的请求突发, 批次排队通过、节奏更平稳
+ *   (体验优化面; 与全局平滑节流同族)。越窗请求等待最老时间戳滑出, 宽窗批次自动摊平。
+ *   接入 fetchAllV2Search 唯一入口。
+ */
+export class TagRecSlidingWindowGate {
+  private stamps: number[] = []
+  constructor(
+    private readonly limit: number,
+    private readonly windowMs: number,
+    private readonly now: () => number = Date.now,
+  ) {}
+  /** 测试/语境重置用 */
+  reset() {
+    this.stamps = []
+  }
+  /** 窗口内取一席; 满窗则等最老时间戳滑出 (可中止) */
+  async acquire(signal?: AbortSignal): Promise<void> {
+    for (;;) {
+      if (signal?.aborted) throw new DOMException('Aborted', 'AbortError')
+      const t = this.now()
+      while (this.stamps.length && t - this.stamps[0]! >= this.windowMs) this.stamps.shift()
+      if (this.stamps.length < this.limit) {
+        this.stamps.push(t)
+        return
+      }
+      await abortableDelay(Math.max(1, this.stamps[0]! + this.windowMs - t), signal)
+    }
+  }
+}
+
 /** 本特性共享平滑限速、退避与并发上限 (tag/top 等池拉取并发 <=4) */
 export const tagRecBackoff = new BackoffGate(undefined, undefined, Math.random)
 export const tagRecLimit = pLimit(4)
-/** all/v2 搜索道专用并发: 叠加在 tagRecLimit/RecallScheduler 内层取严 —— 该端点风控画像最严, 前台等待态也封顶 2 */
+/** all/v2 搜索道专用并发: 叠加在 tagRecLimit/RecallScheduler 内层取严 —— 体验向更稳节奏, 前台等待态也封顶 2 */
 export const allV2Limit = pLimit(2)
+/** search 滑动窗平滑器单例 */
+export const tagRecSearchGate = new TagRecSlidingWindowGate(12, 10_000)
+/** 测试用: 清滑动窗账 (模块级单例跨用例累计会误触发等待) */
+export function __resetTagRecSearchGateForTest() {
+  tagRecSearchGate.reset()
+}

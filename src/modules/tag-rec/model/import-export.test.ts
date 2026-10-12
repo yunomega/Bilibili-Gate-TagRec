@@ -87,7 +87,15 @@ describe.concurrent('$modules/tag-rec/model/import-export — JSON (§6.1)', () 
     expect(parsed.data.favorites).toEqual([empty])
     const plan = planTagRecImport(parsed.data, { favorites: [], blacklist: [] })
     expect(plan.invalidGroups).toEqual([])
-    expect(plan.favoritesToAdd[0]).toMatchObject({ ...empty, l1Id: plan.l1ToAdd[0].id })
+    // 旧扁平组升格组合权威: 负向折进 exclude 原子, legacy 写位摘除 (语义等价不丢条件)
+    const { negative_tag_ids: _neg, overrides: _ov, ...rest } = empty
+    expect(plan.favoritesToAdd[0]).toMatchObject({ ...rest, l1Id: plan.l1ToAdd[0].id })
+    expect(plan.favoritesToAdd[0].negative_tag_ids).toBeUndefined()
+    expect(plan.favoritesToAdd[0].overrides).toBeUndefined()
+    expect(plan.favoritesToAdd[0].combination?.exclude).toMatchObject([
+      { field: 'tag', value: { id: 9, name: 'tag9' } },
+      { field: 'title', value: '屏蔽词' },
+    ])
   })
   it('三件往返无损 + version 字段', () => {
     const input = {
@@ -513,12 +521,13 @@ describe.concurrent('$modules/tag-rec/model/import-export — JSON (§6.1)', () 
     expect(parsed.ok).toBe(true)
     if (!parsed.ok) return
     const plan = planTagRecImport(parsed.data, { favorites: [], blacklist: [] })
-    const ov = plan.favoritesToAdd[0].overrides
+    // 升格后非 negative 部分落 combination.filters (同 overrides 槽位形状), negative 折成 exclude 原子
+    const ov = plan.favoritesToAdd[0].combination?.filters
     expect(ov?.dims).toEqual({ likeMin: { enabled: true, value: 5 } })
     expect(ov?.score?.weights).toEqual({ likeRate: 0.5 })
     expect(ov?.score?.anchors).toEqual({ viewLog10: 7 })
     expect(ov?.pools).toEqual({ archiveRelated: { smallPoolThreshold: 7 } })
-    expect(ov?.negative?.title).toEqual(['广告'])
+    expect(plan.favoritesToAdd[0].combination?.exclude).toMatchObject([{ field: 'title', value: '广告' }])
     expect(ov?.smallPoolThreshold).toBe(3)
     const l1ov = plan.l1ToAdd[0].overrides
     expect(l1ov?.dims).toEqual({ coinMax: { enabled: true, value: 2 } })
@@ -627,7 +636,7 @@ describe.concurrent('$modules/tag-rec/model/import-export — JSON (§6.1)', () 
       if (atParent) {
         expect(merged.favorites[0].l1Id).not.toBe(merged.favorites[1].l1Id)
         expect(plan.l1ToAdd.map((l) => l.overrides?.poolsEnabled?.tagTop)).toEqual([false, true])
-      } else expect(plan.favoritesToAdd.map((g) => g.overrides?.poolsEnabled?.tagTop)).toEqual([false, true])
+      } else expect(plan.favoritesToAdd.map((g) => g.combination?.filters?.poolsEnabled?.tagTop)).toEqual([false, true])
     }
   })
 
@@ -1042,5 +1051,206 @@ describe('R8 仅看家族 + 池筛选 (归一/往返)', () => {
     expect(parsed.data.filterConfig.dims.upAllow).toEqual({ enabled: false, list: [] })
     expect(parsed.data.filterConfig.dims.titleAllow).toEqual({ enabled: false, list: [] })
     expect(parsed.data.filterConfig.poolsEnabled).toBeUndefined()
+  })
+})
+
+describe('旧扁平组升格组合权威 (v1/v2 兼容)', () => {
+  const plan = (favorites: TagGroup[]) =>
+    planTagRecImport(
+      { version: 2, l1: [], favorites, blacklist: [], filterConfig: filterSettings() },
+      { favorites: [], blacklist: [] },
+    )
+  const atoms = (g: TagGroup, field: string) => g.combination?.exclude.filter((a) => a.field === field) ?? []
+  const includeAtoms = (g: TagGroup) =>
+    (g.combination?.include.children ?? []).flatMap((c) =>
+      c.kind === 'atom' ? [c] : c.children.filter((x): x is Extract<typeof x, { kind: 'atom' }> => x.kind === 'atom'),
+    )
+
+  it('正向 tag_ids => include tag 行原子; tag_ids 重投影等价', () => {
+    const g0 = plan([g('p', [1, 2, 2, 3])]).favoritesToAdd[0]
+    expect(g0.combination).toBeDefined()
+    const tags = includeAtoms(g0).filter((a) => a.field === 'tag')
+    expect(tags.map((a) => a.value.id)).toEqual([1, 2, 3])
+    expect(g0.tag_ids.map((x) => x.id)).toEqual([1, 2, 3])
+  })
+
+  it('负向并集: 顶层 negative_tag_ids ∪ overrides.negative.tagIds 去重折 exclude; 其余 field 各自成原子', () => {
+    const g0 = plan([
+      g('n', [1], {
+        negative_tag_ids: [e(9), e(10)],
+        overrides: {
+          negative: {
+            tagIds: [e(9), e(12)], // 与顶层同 id 9 => 去重
+            tagBlock: { enabled: true, list: [e(11)] },
+            up: [{ name: 'UP甲', mid: 42 }],
+            title: ['广告'],
+            desc: ['带货'],
+            partitionBlock: [{ name: '游戏', v1: 4 }],
+          },
+        },
+      }),
+    ]).favoritesToAdd[0]
+    expect(g0.combination).toBeDefined()
+    expect(atoms(g0, 'tag').map((a) => (a.value as TagIdEntry).id)).toEqual([9, 12, 10, 11]) // 合并序: overrides 先行, 顶层同 id 去重
+    expect(atoms(g0, 'up')).toMatchObject([{ value: { name: 'UP甲', mid: 42 } }])
+    expect(atoms(g0, 'title')).toMatchObject([{ value: '广告' }])
+    expect(atoms(g0, 'desc')).toMatchObject([{ value: '带货' }])
+    expect(atoms(g0, 'partition')).toMatchObject([{ value: { name: '游戏', v1: 4 } }])
+    expect(g0.negative_tag_ids).toBeUndefined()
+    expect(g0.overrides).toBeUndefined()
+  })
+
+  it('正负同 id => 负向 atom 剔除 (镜像 makeTagGroup 互斥口径)', () => {
+    const g0 = plan([g('x', [1, 2], { negative_tag_ids: [e(2), e(9)] })]).favoritesToAdd[0]
+    expect(atoms(g0, 'tag').map((a) => (a.value as TagIdEntry).id)).toEqual([9])
+  })
+
+  it('仅看名单 => include 下各 field any 子组 (组合内正向收窄)', () => {
+    const g0 = plan([
+      g('a', [1], {
+        overrides: {
+          negative: {
+            tagAllow: { enabled: true, list: [e(5)] },
+            upAllow: { enabled: true, list: [{ name: 'UP乙' }] },
+            tagBlock: { enabled: false, list: [e(6)] }, // 未启用不落
+          },
+        },
+      }),
+    ]).favoritesToAdd[0]
+    const children = g0.combination?.include.children ?? []
+    // 播种 tag 行与 tagAllow 行同挂 'tag' 名 —— 按原子内容区分 (正向行是 id 1, 仅看行是 id 5)
+    const tagAllow = children.find(
+      (c): c is Extract<typeof c, { kind: 'group' }> =>
+        c.kind === 'group' &&
+        c.name === 'tag' &&
+        c.children.some((a) => a.kind === 'atom' && a.field === 'tag' && a.value.id === 5),
+    )
+    const upAllow = children.find(
+      (c): c is Extract<typeof c, { kind: 'group' }> => c.kind === 'group' && c.name === 'up',
+    )
+    expect(tagAllow?.mode).toBe('any')
+    expect(tagAllow?.children).toMatchObject([{ field: 'tag', value: { id: 5 } }])
+    expect(upAllow?.children).toMatchObject([{ field: 'up', value: { name: 'UP乙' } }])
+    expect(atoms(g0, 'tag')).toEqual([]) // 未启用的 tagBlock 不落 exclude
+  })
+
+  it('overrides 非 negative 部分 => combination.filters (槽位形状原样)', () => {
+    const g0 = plan([
+      g('f', [1], {
+        overrides: {
+          dims: { likeMin: { enabled: true, value: 5 } },
+          score: { weights: { likeRate: 0.5 } },
+          smallPoolThreshold: 3,
+          negative: { title: ['广告'] },
+        },
+      }),
+    ]).favoritesToAdd[0]
+    expect(g0.combination?.filters?.dims).toEqual({ likeMin: { enabled: true, value: 5 } })
+    expect(g0.combination?.filters?.score).toEqual({ weights: { likeRate: 0.5 } })
+    expect(g0.combination?.filters?.smallPoolThreshold).toBe(3)
+    expect(atoms(g0, 'title')).toMatchObject([{ value: '广告' }])
+  })
+
+  it('纯负向组: 组合有效 (exclude 占位), enabled 按包内声明', () => {
+    const g0 = plan([g('neg', [], { name: '纯负向', negative_tag_ids: [e(9)], enabled: true })]).favoritesToAdd[0]
+    expect(g0.combination).toBeDefined()
+    expect(atoms(g0, 'tag').map((a) => (a.value as TagIdEntry).id)).toEqual([9])
+    expect(g0.tag_ids).toEqual([])
+    expect(g0.enabled).toBe(true)
+    const g1 = plan([g('neg2', [], { name: '纯负向停用', negative_tag_ids: [e(9)], enabled: false })]).favoritesToAdd[0]
+    expect(g1.combination).toBeDefined()
+    expect(g1.enabled).toBe(false)
+  })
+
+  it('超节点预算 => 保扁平原样入表 (不静默截断)', () => {
+    const big = g(
+      'big',
+      Array.from({ length: 130 }, (_, i) => i + 1),
+    )
+    const g0 = plan([big]).favoritesToAdd[0]
+    expect(g0.combination).toBeUndefined()
+    expect(g0.tag_ids).toHaveLength(130)
+  })
+
+  it('重投影 tag 成员超集市单组闸 100 => 保扁平维持可分享 (节点预算内但投影超限)', () => {
+    const g0 = plan([
+      g(
+        'sharecap',
+        Array.from({ length: 60 }, (_, i) => i + 1),
+        {
+          overrides: {
+            negative: { tagAllow: { enabled: true, list: Array.from({ length: 60 }, (_, i) => e(i + 101)) } },
+          },
+        },
+      ),
+    ]).favoritesToAdd[0]
+    expect(g0.combination).toBeUndefined() // 60+60=120 > 100, 升级后永远分享不出去 => 保扁平
+    expect(g0.tag_ids).toHaveLength(60)
+    expect(g0.overrides?.negative?.tagAllow?.list).toHaveLength(60)
+  })
+
+  it('negative_strict / overrides.negative.strict => 核查语义无组合等价物, 保扁平', () => {
+    const flat1 = g('s1', [1], { negative_tag_ids: [e(9)], negative_strict: true })
+    const g1 = plan([flat1]).favoritesToAdd[0]
+    expect(g1.combination).toBeUndefined()
+    expect(g1.negative_tag_ids).toEqual([e(9)])
+    expect(g1.negative_strict).toBe(true)
+    const flat2 = g('s2', [1], { overrides: { negative: { strict: true, tagIds: [e(9)] } } })
+    const g2 = plan([flat2]).favoritesToAdd[0]
+    expect(g2.combination).toBeUndefined()
+    expect(g2.overrides?.negative?.strict).toBe(true)
+  })
+
+  it('条件原子不可表达 => 整组保扁平 (不丢半个负向词)', () => {
+    const g0 = plan([g('bad', [1], { overrides: { negative: { up: [{ name: '', mid: 1 }], title: ['广告'] } } })])
+      .favoritesToAdd[0]
+    expect(g0.combination).toBeUndefined()
+    expect(g0.overrides?.negative?.title).toEqual(['广告'])
+  })
+
+  it('名单级 strict (tagBlock.strict/tagAllow.strict) => 核查语义无组合等价物, 保扁平', () => {
+    const g1 = plan([
+      g('s3', [1], { overrides: { negative: { tagBlock: { enabled: true, list: [e(9)], strict: true } } } }),
+    ]).favoritesToAdd[0]
+    expect(g1.combination).toBeUndefined()
+    expect(g1.overrides?.negative?.tagBlock?.strict).toBe(true)
+    const g2 = plan([
+      g('s4', [1], { overrides: { negative: { tagAllow: { enabled: true, list: [e(5)], strict: true } } } }),
+    ]).favoritesToAdd[0]
+    expect(g2.combination).toBeUndefined()
+    expect(g2.overrides?.negative?.tagAllow?.strict).toBe(true)
+  })
+
+  it('旧形 negative.partition{mode} 折叠: allow => 常效仅看行, block => exclude 原子', () => {
+    const allow = plan([
+      g('pa', [1], { overrides: { negative: { partition: { mode: 'allow', list: [{ name: '游戏', v1: 4 }] } } } }),
+    ]).favoritesToAdd[0]
+    expect(allow.combination).toBeDefined()
+    const partitionRow = (allow.combination?.include.children ?? []).find(
+      (c): c is Extract<typeof c, { kind: 'group' }> => c.kind === 'group' && c.name === 'partition',
+    )
+    expect(partitionRow?.mode).toBe('any')
+    expect(partitionRow?.children).toMatchObject([{ field: 'partition', value: { name: '游戏', v1: 4 } }])
+    expect(atoms(allow, 'partition')).toEqual([])
+    const block = plan([
+      g('pb', [1], { overrides: { negative: { partition: { mode: 'block', list: [{ name: '游戏', v1: 4 }] } } } }),
+    ]).favoritesToAdd[0]
+    expect(atoms(block, 'partition')).toMatchObject([{ value: { name: '游戏', v1: 4 } }])
+  })
+
+  it('已带 combination 的 v3 组原样透传, 不再升格', () => {
+    const combo = {
+      version: 1 as const,
+      include: {
+        kind: 'group' as const,
+        id: 'root',
+        mode: 'any' as const,
+        children: [{ kind: 'atom' as const, id: 'a1', field: 'tag' as const, value: e(7) }],
+      },
+      exclude: [],
+    }
+    const g0 = plan([g('v3', [1], { combination: combo })]).favoritesToAdd[0]
+    expect(g0.combination).toEqual(combo)
+    expect(g0.tag_ids.map((x) => x.id)).toEqual([7]) // combination 权威投影
   })
 })

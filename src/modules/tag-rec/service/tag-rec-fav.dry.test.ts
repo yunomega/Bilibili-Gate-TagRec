@@ -467,7 +467,7 @@ describe('$modules/tag-rec/service/tag-rec-fav AUDIT 回归 (15/16/17/20)', () =
     // 归属库存恒零 —— 修复前全局产出闸门让深挖流永不点火 (实机零产出)
     vi.mocked(fetchTagTop).mockImplementation((tid) =>
       Promise.resolve(
-        tid === 9 ? Array.from({ length: 20 }, (_, i) => ({ bvid: `BVy${i}` })) : [{ bvid: `BVx${tid}` }],
+        tid === 9 ? Array.from({ length: 32 }, (_, i) => ({ bvid: `BVy${i}` })) : [{ bvid: `BVx${tid}` }],
       ),
     )
     const waiters: ((v: AllV2VideoItem[]) => void)[] = []
@@ -479,7 +479,7 @@ describe('$modules/tag-rec/service/tag-rec-fav AUDIT 回归 (15/16/17/20)', () =
       await new Promise((r) => setTimeout(r, 0))
     // 断言到关键词级: 交集组的流 ('原神'/'cos' 单词流或 '原神 cos' 组合词流) 必须在挖 —
     // 防"梯队开了火但开错流"的假阳性 (Y 的 'other' 顺带被挖无害: needed 视图滞后一轮,
-    // 本轮 20 条未入队时它仍算欠水位, 是既有浅水位语义不是本改动的偏差)
+    // 本轮未入队时它仍算欠水位, 是既有浅水位语义不是本改动的偏差)
     const keywords = vi.mocked(fetchAllV2Search).mock.calls.map((c) => c[0])
     expect(keywords.length).toBeGreaterThan(0)
     expect(keywords.some((k) => k.includes('原神') || k.includes('cos'))).toBe(true)
@@ -501,7 +501,7 @@ describe('$modules/tag-rec/service/tag-rec-fav AUDIT 回归 (15/16/17/20)', () =
     // 高产顶过 triggerYield; 全对 G 剥资格 —— 修复前 fed 认 claims 记 G 已供 => 闸不开
     //   (title 字段必须存在: 无标题条目 title 原子判 unknown 即 defer 放行, 剥不了资格)
     vi.mocked(fetchTagTop).mockResolvedValue(
-      Array.from({ length: 20 }, (_, i) => ({ bvid: `BVs${i}`, title: `视频${i}` })),
+      Array.from({ length: 32 }, (_, i) => ({ bvid: `BVs${i}`, title: `视频${i}` })),
     )
     const waiters: ((v: AllV2VideoItem[]) => void)[] = []
     vi.mocked(fetchAllV2Search).mockImplementation(() => new Promise<AllV2VideoItem[]>((r) => waiters.push(r)))

@@ -617,6 +617,35 @@ export function tagRecDeliverable(
 }
 
 /** Unknown operators and malformed hard conditions must never fall back to a wider tag-only group. */
+/** 原子值分 field 判定 (validateTagRecCombination 原子分支抽出; 旧包升格按同档预过滤不可表达原子) */
+export function tagRecConditionAtomValueValid(node: { field: string; value: unknown }): boolean {
+  const v = node.value as Record<string, unknown> & { name?: unknown }
+  if (node.field === 'title' || node.field === 'desc')
+    return typeof node.value === 'string' && normalizeTagName(node.value).length >= 2 && node.value.length <= 200
+  if (!v || typeof v !== 'object' || typeof v.name !== 'string' || !v.name.trim() || v.name.length > 200) return false
+  if (node.field === 'tag')
+    return (
+      Object.keys(v).every((key) => ['id', 'name', 'tag_type'].includes(key)) &&
+      (v.tag_type === undefined || ['topic', 'old_channel', 'bgm'].includes(v.tag_type as string)) &&
+      Number.isSafeInteger(v.id) &&
+      (v.id as number) > 0 &&
+      !!v.name.trim()
+    )
+  if (node.field === 'up')
+    return (
+      Object.keys(v).every((key) => ['name', 'mid'].includes(key)) &&
+      !!v.name.trim() &&
+      (v.mid === undefined || (Number.isSafeInteger(v.mid) && (v.mid as number) > 0))
+    )
+  if (node.field === 'partition')
+    return (
+      Object.keys(v).every((key) => ['name', 'v1', 'v2', 'level'].includes(key)) &&
+      (v.level === undefined || v.level === 'parent' || v.level === 'leaf') &&
+      [v.v1, v.v2].some((id) => Number.isSafeInteger(id) && (id as number) > 0) &&
+      [v.v1, v.v2].every((id) => id === undefined || (Number.isSafeInteger(id) && (id as number) > 0))
+    )
+  return false
+}
 export function validateTagRecCombination(value: unknown): value is TagRecCombination {
   if (!value || typeof value !== 'object') return false
   const combo = value as TagRecCombination
@@ -661,38 +690,7 @@ export function validateTagRecCombination(value: unknown): value is TagRecCombin
         node.children.every((child) => valid(child, depth + 1))
       )
     if (node.kind !== 'atom') return false
-    if (node.field === 'title' || node.field === 'desc')
-      return typeof node.value === 'string' && normalizeTagName(node.value).length >= 2 && node.value.length <= 200
-    if (
-      !node.value ||
-      typeof node.value !== 'object' ||
-      typeof node.value.name !== 'string' ||
-      !node.value.name.trim() ||
-      node.value.name.length > 200
-    )
-      return false
-    if (node.field === 'tag')
-      return (
-        Object.keys(node.value).every((key) => ['id', 'name', 'tag_type'].includes(key)) &&
-        (node.value.tag_type === undefined || ['topic', 'old_channel', 'bgm'].includes(node.value.tag_type)) &&
-        Number.isSafeInteger(node.value.id) &&
-        node.value.id > 0 &&
-        !!node.value.name.trim()
-      )
-    if (node.field === 'up')
-      return (
-        Object.keys(node.value).every((key) => ['name', 'mid'].includes(key)) &&
-        !!node.value.name.trim() &&
-        (node.value.mid === undefined || (Number.isSafeInteger(node.value.mid) && node.value.mid > 0))
-      )
-    if (node.field === 'partition')
-      return (
-        Object.keys(node.value).every((key) => ['name', 'v1', 'v2', 'level'].includes(key)) &&
-        (node.value.level === undefined || node.value.level === 'parent' || node.value.level === 'leaf') &&
-        [node.value.v1, node.value.v2].some((id) => Number.isSafeInteger(id) && id! > 0) &&
-        [node.value.v1, node.value.v2].every((id) => id === undefined || (Number.isSafeInteger(id) && id > 0))
-      )
-    return false
+    return tagRecConditionAtomValueValid(node)
   }
   return valid(combo.include, 0) && combo.exclude.every((atom) => atom?.kind === 'atom' && valid(atom, 0))
 }

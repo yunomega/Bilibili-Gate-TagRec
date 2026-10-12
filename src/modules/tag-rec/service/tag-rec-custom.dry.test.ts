@@ -561,11 +561,11 @@ describe('$modules/tag-rec/service/tag-rec-custom AUDIT 回归 (03/09/15/16/20)'
       addedAt: 0,
       combination: combo,
     }
-    // 12 条 tag/top 高产 (≥triggerYield=10): 全局欠产门不开, 只能靠饿组闸救
+    // 32 条 tag/top 高产 (≥triggerYield): 全局欠产门不开, 只能靠饿组闸救
     // 逐轮出新 bvid (same-bvid 会在第二轮被 seen 去重成空轮 => 走 hasTagTopPagesLeft 早退, 评估不到闸)
     let round = 0
     vi.mocked(fetchTagTop).mockImplementation(() => {
-      const items = Array.from({ length: 12 }, (_, i) => ({ bvid: `tp-${round}-${i}` }))
+      const items = Array.from({ length: 32 }, (_, i) => ({ bvid: `tp-${round}-${i}` }))
       round++
       return Promise.resolve(items)
     })
@@ -598,7 +598,7 @@ describe('$modules/tag-rec/service/tag-rec-custom AUDIT 回归 (03/09/15/16/20)'
     vi.mocked(fetchTagTop).mockImplementation(() => {
       // title 必须存在且不含 'zzz' —— 无标题条目 desc/title 原子判 unknown(defer 放行),
       //   只有真标题才证 mismatch => gA 链被剥资格只剩 gB eligible
-      const items = Array.from({ length: 12 }, (_, i) => ({ bvid: `tp-${sharedRound}-${i}`, title: `视频${i}` }))
+      const items = Array.from({ length: 32 }, (_, i) => ({ bvid: `tp-${sharedRound}-${i}`, title: `视频${i}` }))
       sharedRound++
       return Promise.resolve(items)
     })

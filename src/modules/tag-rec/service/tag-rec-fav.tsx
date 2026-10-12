@@ -20,6 +20,9 @@ import {
   runTagRecFilter,
   runTagRecScoreStage,
   TAG_REC_ALL_POOL_KEYS,
+  TAG_REC_VERIFY_CANDIDATES,
+  TAG_REC_VERIFY_MS,
+  TAG_REC_VERIFY_REQUESTS,
   type TagRecDropDimKey,
   type TagRecFilterCore,
   type TagRecFilterRoundStats,
@@ -63,6 +66,7 @@ import {
   trimTagRecStock,
 } from './fair-queue'
 import {
+  clampTagRecLadderOpts,
   FALLBACK_LADDER_STRATEGY_AGGRESSIVE,
   newTagRecLadderState,
   resetTagRecLadderState,
@@ -121,6 +125,15 @@ let sharedDeck = new TagRecUnitsDeck()
 /** 一次预取最多 5 个二级组（k 更大时随 k，上限 10）；库存少于半页才补。 */
 const PREFETCH_GROUP_WINDOW = 5
 const STOCK_LOW_WATER = 10
+/** 每轮核验预算 —— 读 settings.tagRec.ladder 热更, GM 注入值经 LADDER_BOUNDS 钳制 */
+const tagRecVerifyLimits = () => {
+  const o = clampTagRecLadderOpts(settings.tagRec.ladder)
+  return {
+    requests: o.verifyRequests ?? TAG_REC_VERIFY_REQUESTS,
+    candidates: o.verifyCandidates ?? TAG_REC_VERIFY_CANDIDATES,
+    ms: o.verifyMs ?? TAG_REC_VERIFY_MS,
+  }
+}
 /**
  * 票 41 逐源干态同享模块级 (与 sharedLadderState/sharedSeenBvids 同层): 冷收藏组被牌组反复抽中时
  * 不再每轮重打空 tag/top —— 机制复用 tab2 TagRecTidDryTracker, 复位轴 = unitsFingerprint 变
@@ -380,9 +393,12 @@ export class TagRecFavService extends BaseTabService {
 
   /**
    * A4-3: 过滤签名构造期钉点 —— drift 判定的「收紧型过滤变更」轴;
-   *   刻意不随 fetchMore 重钉 (放宽侧复活走 seenBvids 通道自愈, 钉点漂移保留给 drift 判定消费)
+   *   刻意不随 fetchMore 重钉 (放宽侧复活走 seenBvids 通道自愈, 钉点漂移保留给 drift 判定消费);
+   *   轻应用已同步生效链 => 原位重钉 (非 readonly, 否则 service 在漂移判定里恒漂移被顶替)
    */
-  readonly filterSignature: string
+  filterSignature: string
+  /** 生效过滤 JSON 基线 (轻应用 no-op 判定): materialize 后内容 —— 勾空名单等无效果编辑不触发重滤 */
+  private effectiveFilterJson?: string
 
   constructor() {
     super(TagRecFavService.PAGE_SIZE)
@@ -394,6 +410,7 @@ export class TagRecFavService extends BaseTabService {
     syncFavFilterState() // 实修票①: 过滤配置漂移 => seenBvids 复位, 放宽后已滤条重获参评资格
     sharedUpSearch.sync(this.recheckPlan().up)
     this.filterSignature = computeTagRecFavFilterSignature() // A4-3: 构造期钉点 (漂移判定输入; 不随轮重钉)
+    this.effectiveFilterJson = JSON.stringify(this.effectiveFilter())
     this.qs.bufferQueue = sharedBufferQueue // 票 37: 未上屏存货跨刷新存活 (签名变时上行已清)
     this.refilterSharedQueue() // 实修: 组 override/全局改后刷新, 存货按新生效链重滤 (旧配置滤出的不再直放)
     this.retryPartitions()
@@ -403,11 +420,12 @@ export class TagRecFavService extends BaseTabService {
   private partitionHeld = new Set<string>()
   private partitionPausePolicy?: string
   get autoLoadPaused() {
+    // 停牌不再闩装载 —— 标志仅作横幅态; 停牌条留队停放, 供给/深挖照常推进 (tab2 同口径)
     if (tagRecFavSession.partitionPaused && this.partitionPausePolicy !== computeTagRecFavFilterSignature()) {
       this.partitionHeld.clear()
       this.retryPartitions()
     }
-    return tagRecFavSession.partitionPaused
+    return false
   }
   retryPartitions() {
     tagRecFavSession.partitionPaused = false
@@ -415,8 +433,9 @@ export class TagRecFavService extends BaseTabService {
   }
   beginLoadOperation(signal: AbortSignal) {
     this.endLoadOperation()
-    this.partitionBudget = new TagRecPartitionBudget(signal)
+    this.partitionBudget = new TagRecPartitionBudget(signal, tagRecVerifyLimits())
   }
+
   endLoadOperation() {
     this.partitionBudget?.dispose()
     this.partitionBudget = undefined
@@ -636,6 +655,41 @@ export class TagRecFavService extends BaseTabService {
     return tagRecFavSession.filterStats.degraded
   }
 
+  /**
+   * 临时过滤轻应用 (过滤面板离场): 重滤存货队列 + 同步签名/纪元 (与重建同口径的簿记) ——
+   *   不重建 service、不发请求; 已上屏条目由调用侧经 refilterDisplayed 原位重过一遍。
+   * 生效过滤未变 (如勾了空名单/无效果编辑) => 返回 false 整体跳过 —— 不翻纪元不重滤不动画面。
+   */
+  applySessionFilterLive(): boolean {
+    const next = JSON.stringify(this.effectiveFilter())
+    if (this.effectiveFilterJson === next) return false
+    this.effectiveFilterJson = next
+    syncFavFilterState()
+    // 生效链已吸收本次过滤变更 => 构造期钉点原位重钉 (否则 service 在 drift 判定里恒漂移,
+    //   reuse/back/forward 一律重建顶替); 语境签名同步同口径 (fav 签名不含过滤段, 调用幂等)
+    this.contextSignature = syncFavSharedState()
+    this.filterSignature = computeTagRecFavFilterSignature()
+    this.refilterSharedQueue()
+    // 过滤已变 => 旧「硬见底」判据失效 (可能正是旧过滤滤空所致): 复位硬见底闩让补货重新评估;
+    //   新过滤下若仍零产, 下一轮 exhaustRound 会复置 (同 fetchMore 开头清 hardBottom 的先例)
+    this.hasMoreExceptQueue = true
+    tagRecFavSession.hardBottom = false
+    return true
+  }
+
+  /**
+   * 按新生效链过滤已上屏条目 (轻应用用): 缺证据维按缺字段豁免语义放行 (不触发核验、不计滤除账),
+   *   核验预算/待决流转仍由后续 loadMore 的常规管线承担。
+   */
+  refilterDisplayed(items: TagRecItemExtend[]): TagRecItemExtend[] {
+    return runTagRecFilter(items, {
+      resolve: this.scopeResolver(),
+      pools: tagRecNegativePools(),
+      deferPartitions: true,
+      relatedFallback: this.relatedFallbackOn(),
+    }).items
+  }
+
   /** 交集组合在的组: related 只是兜底料 —— 兜底门不开时停选种 (产物纯死库存, 火力留给 all/v2).
    *  走 resolver 的派生交集标记 —— 生效链 tagAllow 计入同口径 (判定函数只见组合内 filters) */
   private relatedSeedingAllowed() {
@@ -813,7 +867,7 @@ export class TagRecFavService extends BaseTabService {
   override async loadMore(abortSignal: AbortSignal): Promise<RecItemTypeOrSeparator[] | undefined> {
     if (abortSignal.aborted || this.autoLoadPaused) return
     const local = !this.partitionBudget
-    const budget = this.partitionBudget ?? new TagRecPartitionBudget(abortSignal)
+    const budget = this.partitionBudget ?? new TagRecPartitionBudget(abortSignal, tagRecVerifyLimits())
     try {
       return await this.loadPartitionChecked(abortSignal, budget)
     } finally {
@@ -1291,7 +1345,12 @@ export class TagRecFavService extends BaseTabService {
   }
 
   /** UI「继续深挖」(横幅待决态动作): 全部未 exhausted 深挖流各 +3 页, 落货重挂自动加载; resolve = 本次/在途挖完 */
-  digMore(): Promise<unknown> {
+  /** 自动续挖的最早到期刻 (休息/流冷却; 0=无排程) —— tabbar 横幅排程依据 */
+  digResumeAt() {
+    return this.ladder.resumeAt()
+  }
+
+  digMore(automatic = false): Promise<unknown> {
     // AUDIT-15/16: 弃实例整发拒挖 —— 无 lastFetchSignal 的裸批会越过 abort 闸往共享盒落旧境货
     if (this.isStale()) return Promise.resolve()
     if (sharedUpSearch.pending && sharedUpSearch.hasAnyMore) {
@@ -1303,14 +1362,21 @@ export class TagRecFavService extends BaseTabService {
     }
     // AUDIT-15 对齐 tab2: 退避期手动 dig 拒发 —— 深挖成功率本就低, 烧的是退避时隙 (请求纪律不放宽)
     if (tagRecBackoff.isEngaged) {
-      toast('退避中,恢复后再挖')
+      if (!automatic) toast('退避中,恢复后再挖')
       return Promise.resolve()
     }
     if (this.digRunning) return tagRecRecallScheduler.withForegroundSupply(() => this.digRunning!)
     if (this.ladder.digRunning) return tagRecRecallScheduler.withForegroundSupply(() => this.ladder.digRunning!)
+    // 自动续挖 (tabbar 休息到点排程): 走 canAutoDig 纪律闸 —— 休息未到期即 no-op
+    if (!this.ladder.hasDueStreams()) {
+      // 无 due 流 => 待决态无对象 (冷却排程另由 digResumeAt 承担): 清位防 tabbar 60s 空转
+      tagRecFavSession.digPending = false
+      return Promise.resolve()
+    }
+    if (automatic && !this.ladder.canAutoDig()) return Promise.resolve()
     tagRecFavSession.digRunning = true // 待决态保持, 按钮 loading 防重点
     this.digRunning = tagRecRecallScheduler
-      .withForegroundSupply(() => this.ladder.digPass('manual', this.lastFetchSignal))
+      .withForegroundSupply(() => this.ladder.digPass(automatic ? 'auto' : 'manual', this.lastFetchSignal))
       .catch((e) => (appWarn('[tag-rec] fav dig failed: %o', e), 0))
       .finally(() => {
         this.digRunning = undefined

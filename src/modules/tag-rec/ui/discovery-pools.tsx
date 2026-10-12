@@ -93,7 +93,7 @@ export function TagRecDiscoveryPools({ service, onRefresh }: { service: TagRecCu
                     : `本批补齐 ${result.updated} / ${result.attempted} 条，余下可稍后继续`,
                 )
                 if (!result.stale) {
-                  service.retryPartitions()
+                  service.retryPartitions(true)
                   onRefresh()
                 }
               } catch {
@@ -154,15 +154,13 @@ export function TagRecDiscoveryPools({ service, onRefresh }: { service: TagRecCu
                   checked={session.supplyPaused}
                   onChange={(event) => {
                     tagRecCustomSession.supplyPaused = event.target.checked
-                    service.retryPartitions()
+                    service.retryPartitions(true)
                     onRefresh()
                   }}
                 >
-                  先看缓存，暂缓自动取新和补查
+                  先看缓存，暂缓自动取新
                 </Checkbox>
-                <p>
-                  这是临时浏览节奏，不随二级组保存。明确排除仍会生效，无法核实的内容继续暂存；手动取词或重查按你的点击执行。
-                </p>
+                <p>这是临时浏览节奏，不随二级组保存。只停新内容取新：已进队列的核验与深挖照常，明确排除仍会生效。</p>
               </>
             ),
           },
@@ -196,11 +194,11 @@ export function TagRecDiscoveryPools({ service, onRefresh }: { service: TagRecCu
             type='link'
             onClick={() => {
               tagRecCustomSession.supplyPaused = false
-              service.retryPartitions()
+              service.retryPartitions(true)
               onRefresh()
             }}
           >
-            继续取新与补查
+            恢复取新
           </Button>
         </Typography.Text>
       )}

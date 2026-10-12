@@ -88,7 +88,7 @@ describe('selection boundaries and stock accounting', () => {
   it('normalizes invalid discovery settings without increasing request limits', () => {
     expect(
       tagRecDiscoveryPolicy({ mode: 'fixed', autoDigMax: Infinity, lowYield: NaN, emptyTtlMinutes: -10 }),
-    ).toMatchObject({ mode: 'fixed', autoDigMax: 3, lowYield: 3, emptyTtlMinutes: 5 })
+    ).toMatchObject({ mode: 'fixed', autoDigMax: 20, lowYield: 3, emptyTtlMinutes: 5 })
     expect(tagRecDiscoveryPolicy({ autoDigMax: 1e9, lowYieldStreakLimit: 1e9 })).toMatchObject({
       autoDigMax: 20,
       lowYieldStreakLimit: 20,

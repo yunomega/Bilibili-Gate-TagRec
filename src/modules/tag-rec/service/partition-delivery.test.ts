@@ -17,8 +17,13 @@ import { createTagRecFactoryFilterCore } from '../model/filter-engine'
 import { normalizeAllV2Item } from '../model/normalize-item'
 import { favorites, favoritesL1 } from '../store'
 import { emptyTagRecFilterStats, tagRecCustomSession, tagRecFavSession } from '../store/session'
-import { resetTagRecCustomSharedState, TagRecCustomService } from './tag-rec-custom'
-import { resetTagRecFavSharedState, TagRecFavService } from './tag-rec-fav'
+import {
+  computeTagRecCustomContextSignature,
+  computeTagRecCustomFilterSignature,
+  resetTagRecCustomSharedState,
+  TagRecCustomService,
+} from './tag-rec-custom'
+import { computeTagRecFavFilterSignature, resetTagRecFavSharedState, TagRecFavService } from './tag-rec-fav'
 import type { RecItemTypeOrSeparator, TagRecItemExtend } from '$define'
 import type * as VideoEvidenceApi from '../api/video-evidence'
 vi.mock('../store/combination-blocks', () => ({ tagRecCombinationBlocks: { list: [] } }))
@@ -120,12 +125,14 @@ beforeEach(() => {
   tagRecCustomSession.expandedIds = []
   tagRecCustomSession.selectedGroupIds = ['A']
   tagRecCustomSession.filterOverride = undefined
+  tagRecFavSession.filterOverride = undefined
   tagRecCustomSession.workingGroup = undefined
   tagRecCustomSession.allowUnverified = false
   tagRecCustomSession.supplyPaused = false
   tagRecCustomSession.filterStats = emptyTagRecFilterStats()
   tagRecFavSession.filterStats = emptyTagRecFilterStats()
   settings.tagRec.filter = { ...createTagRecFactoryFilterCore(), activePreset: '', presets: [] }
+  settings.tagRec.ladder = { ...settings.tagRec.ladder, mode: 'fixed', autoDigMax: 0 }
   settings.tagRec.filter.dims.likeRate.enabled = false
   settings.tagRec.filter.dims.partitionAllow = { enabled: true, list: [{ name: '游戏', v2: 1008, level: 'parent' }] }
   favoritesL1.list.push({ id: 'P', name: 'P', enabled: true, weight: 1, addedAt: 0 })
@@ -208,7 +215,7 @@ describe.each(services)('$name 的实际分区交付', ({ Service, session, tab 
     svc.retryPartitions()
     expect(await svc.loadMore(signal())).toEqual([])
     expect(fetchNext).toHaveBeenCalledTimes(2)
-    expect(svc.autoLoadPaused).toBe(true)
+    expect(session.partitionPaused).toBe(true)
   })
   it('个别待核实条目不阻断后面的已知视频，继续核实只追加且不重复交付', async () => {
     if (tab !== ETab.TagRecCustom) return
@@ -264,7 +271,7 @@ describe.each(services)('$name 的实际分区交付', ({ Service, session, tab 
       tagsPending: 1,
     })
   })
-  it('缓存浏览交付已核实内容，未知仍暂存；恢复后才补查', async () => {
+  it('缓存浏览只停取新，核验照常；证据未齐的未知仍暂存', async () => {
     if (tab !== ETab.TagRecCustom) return
     settings.tagRec.filter.enabled = false
     const combination = newTagRecCombination()
@@ -280,7 +287,8 @@ describe.each(services)('$name 的实际分区交付', ({ Service, session, tab 
     svc.qs.bufferQueue.push(known, unknown)
     const delivered = await svc.loadMore(signal())
     expect(delivered?.map((entry) => entry.api === EApiType.TagRec && entry.bvid)).toEqual([known.bvid])
-    expect(fetchTagRecVideoEvidence).not.toHaveBeenCalled()
+    // 「先看缓存」只停取新 —— 核验照常跑; 证据返回 undefined 的未知条照旧暂存
+    expect(fetchTagRecVideoEvidence).toHaveBeenCalled()
     expect(fetchVideoPartition).not.toHaveBeenCalled()
     expect(tagRecCustomSession.partitionPending).toBe(1)
     expect(svc.qs.bufferQueue.some((entry) => entry.api === EApiType.TagRec && entry.bvid === unknown.bvid)).toBe(true)
@@ -289,13 +297,92 @@ describe.each(services)('$name 的实际分区交付', ({ Service, session, tab 
     vi.mocked(fetchTagRecVideoEvidence).mockResolvedValue({ desc: '阅读分析', fieldEvidence: { desc: 'complete' } })
     const supplied = await svc.loadMore(signal())
     expect(supplied?.some((entry) => entry.api === EApiType.TagRec && entry.bvid === unknown.bvid)).toBe(true)
-    expect(fetchTagRecVideoEvidence).toHaveBeenCalledTimes(1)
+    expect(fetchTagRecVideoEvidence).toHaveBeenCalledTimes(2)
+  })
+
+  it('停牌尝试账按复活冷却自清：自动续批不清零（上限真实生效），明令重试或冷却到期才复活', async () => {
+    if (tab !== ETab.TagRecCustom) return
+    settings.tagRec.filter.enabled = false
+    settings.tagRec.ladder = {
+      ...settings.tagRec.ladder,
+      mode: 'fixed',
+      autoDigMax: 0,
+      heldMaxAttempts: 2,
+      heldRetryQuota: 1,
+    }
+    const combination = newTagRecCombination()
+    addTagRecCondition(combination, tagRecConditionAtom('title', 'alpha'))
+    excludeTagRecCondition(combination, tagRecConditionAtom('desc', '动画'))
+    tagRecCustomSession.workingGroup = { ...favorites.list[0], id: '__tagrec_working__', combination }
+    const svc = new TagRecCustomService()
+    svc.hasMoreExceptQueue = false
+    svc.qs.bufferQueue.push(item('held-ttl'))
+    await svc.loadMore(signal())
+    expect(tagRecCustomSession.partitionPending).toBe(1)
+    await svc.loadMore(signal())
+    expect(tagRecCustomSession.partitionAbandoned).toBe(1) // 真查两轮 => 封顶
+    const calls = vi.mocked(fetchTagRecVideoEvidence).mock.calls.length
+    svc.retryPartitions(false) // 冷却未到: 封顶条不动
+    await svc.loadMore(signal())
+    expect(vi.mocked(fetchTagRecVideoEvidence).mock.calls.length).toBe(calls) // 封顶条不再白吃核验额度
+    svc.retryPartitions(true) // 明令重试 => 即刻复活
+    await svc.loadMore(signal())
+    expect(vi.mocked(fetchTagRecVideoEvidence).mock.calls.length).toBeGreaterThan(calls)
+    await svc.loadMore(signal()) // 再次封顶 (capAt 重记)
+    const afterManual = vi.mocked(fetchTagRecVideoEvidence).mock.calls.length
+    svc.retryPartitions(false)
+    await svc.loadMore(signal())
+    expect(vi.mocked(fetchTagRecVideoEvidence).mock.calls.length).toBe(afterManual) // 冷却内仍不复活
+    try {
+      vi.useFakeTimers()
+      vi.setSystemTime(Date.now() + 15 * 60_000 + 1)
+      svc.retryPartitions(false) // 封顶冷却到期 => 自动复活 (无需手动)
+    } finally {
+      vi.useRealTimers()
+    }
+    await svc.loadMore(signal())
+    expect(vi.mocked(fetchTagRecVideoEvidence).mock.calls.length).toBeGreaterThan(afterManual) // 重获轮转资格
   })
   const stock = () => {
     const svc = new Service()
     svc.hasMoreExceptQueue = false
     return svc
   }
+
+  it('临时过滤轻应用: 存货队列与已上屏条目原位重滤, 不重建不重拉', () => {
+    const svc = stock()
+    const keep = item('live-keep') // 工厂默认 title 'alpha'
+    const drop = item('live-drop', { title: 'beta' })
+    svc.qs.bufferQueue.push(keep, drop)
+    // 旧过滤滤空留下的硬见底闩: 轻应用须复位 —— 否则补货被 hasMore 永久挡住 (取消仅看也刷不出来)
+    svc.hasMoreExceptQueue = false
+    session.hardBottom = true
+    session.filterOverride = { dims: { titleAllow: { enabled: true, list: ['alpha'] } } }
+    // 镜像把过滤编辑并入组合对象 (combination 换身): 组合签名计入 filters 入语境签名 =>
+    //   实例钉点漂移后 isSessionStale() 恒真、交付循环静默空转; 轻应用须与重建同口径重钉
+    if (tab === ETab.TagRecCustom) {
+      const combination = newTagRecCombination()
+      addTagRecCondition(combination, tagRecConditionAtom('title', 'alpha'))
+      tagRecCustomSession.workingGroup = { ...favorites.list[0], id: '__tagrec_working__', combination }
+      tagRecCustomSession.workingGroup.combination = { ...combination, filters: session.filterOverride as never }
+      expect(svc.contextSignature).not.toBe(computeTagRecCustomContextSignature())
+    }
+    expect(svc.applySessionFilterLive()).toBe(true)
+    if (tab === ETab.TagRecCustom) {
+      expect(svc.contextSignature).toBe(computeTagRecCustomContextSignature()) // isSessionStale 不再恒真
+      expect(svc.filterSignature).toBe(computeTagRecCustomFilterSignature()) // drift 判定不再恒漂移
+    } else {
+      expect(svc.filterSignature).toBe(computeTagRecFavFilterSignature())
+    }
+    expect(svc.hasMoreExceptQueue).toBe(true) // 硬见底闩复位 (新过滤下仍零产会由 exhaustRound 复置)
+    expect(session.hardBottom).toBe(false)
+    const queueBvids = svc.qs.bufferQueue.map((entry) => entry.api === EApiType.TagRec && entry.bvid)
+    expect(queueBvids).toContain(keep.bvid)
+    expect(queueBvids).not.toContain(drop.bvid) // 存货按新生效链重滤
+    expect(svc.refilterDisplayed([keep, drop]).map((entry) => entry.bvid)).toEqual([keep.bvid]) // 已上屏条目重滤
+    expect(svc.applySessionFilterLive()).toBe(false) // 生效过滤未变 => no-op 跳过 (零画面变化)
+    expect(fetchTagTop).not.toHaveBeenCalled() // 零请求
+  })
 
   it('辅助过滤关闭时仍守完整组合，必要补查后交付，失败的未知保留库存', async () => {
     settings.tagRec.filter.enabled = false
@@ -442,7 +529,7 @@ describe.each(services)('$name 的实际分区交付', ({ Service, session, tab 
     expect(fetchVideoPartition).toHaveBeenCalledTimes(1)
     expect(svc.qs.bufferQueue).toHaveLength(1)
     expect(svc.hasMore).toBe(true)
-    expect(svc.autoLoadPaused).toBe(true)
+    expect(session.partitionPaused).toBe(true)
     expect(session.partitionPending).toBe(1)
     expect(session.hardBottom).toBe(false)
     expect(session.filterStats.dropped).toBe(0)
@@ -450,7 +537,7 @@ describe.each(services)('$name 的实际分区交付', ({ Service, session, tab 
     svc.retryPartitions()
     expect(await svc.loadMore(signal())).toHaveLength(1)
     expect(svc.qs.bufferQueue).toHaveLength(0)
-    expect(svc.autoLoadPaused).toBe(false)
+    expect(session.partitionPaused).toBe(false)
     svc.restore()
     expect(svc.qs.bufferQueue).toHaveLength(1)
   })
@@ -471,7 +558,7 @@ describe.each(services)('$name 的实际分区交付', ({ Service, session, tab 
     const known = item('restore-known', { tidv2: 2071, pid_v2: 1008 })
     svc.qs.bufferQueue.push(known, item('restore-pending'))
     expect(await svc.loadMore(signal())).toHaveLength(1)
-    expect(svc.autoLoadPaused).toBe(true)
+    expect(session.partitionPaused).toBe(true)
     expect(fetchVideoPartition).toHaveBeenCalledTimes(1)
     svc.restore()
     expect(svc.autoLoadPaused).toBe(false)
@@ -512,6 +599,7 @@ describe.each(services)('$name 的实际分区交付', ({ Service, session, tab 
   })
 
   it('真正的 refreshForGrid 外层补足不能续领预算连续补查', async () => {
+    settings.tagRec.ladder.verifyRequests = 20
     const svc = stock()
     svc.qs.bufferQueue.push(...Array.from({ length: 120 }, (_, i) => item(`limit-${i}`)))
     vi.mocked(fetchVideoPartition).mockResolvedValue({ tidv2: 2090, pid_v2: 1010 })
@@ -519,11 +607,12 @@ describe.each(services)('$name 的实际分区交付', ({ Service, session, tab 
     expect(fetchVideoPartition).toHaveBeenCalledTimes(20)
     expect(session.filterStats.dropped).toBe(20)
     expect(svc.qs.bufferQueue).toHaveLength(100)
-    expect(svc.autoLoadPaused).toBe(true)
+    expect(session.partitionPaused).toBe(true)
     expect(svc.hasMore).toBe(true)
   })
 
   it('外层因通用过滤而多次补足时，同一刷新仍只用一份补查预算', async () => {
+    settings.tagRec.ladder.verifyRequests = 20
     const svc = stock()
     svc.qs.bufferQueue.push(
       ...Array.from({ length: 120 }, (_, i) => item(`outer-${i}`, i % 2 ? {} : { tidv2: 2071, pid_v2: 1008 })),
@@ -532,11 +621,11 @@ describe.each(services)('$name 的实际分区交付', ({ Service, session, tab 
     vi.mocked(filterRecItems).mockImplementation((items) => items.slice(0, 1))
     const load = vi.spyOn(svc, 'loadMore')
     const out = await refreshForGrid({ tab, service: svc, abortSignal: signal() })
-    expect(out).toHaveLength(2)
-    expect(load).toHaveBeenCalledTimes(2)
+    expect(out).toHaveLength(5)
+    expect(load).toHaveBeenCalledTimes(7)
     expect(fetchVideoPartition).toHaveBeenCalledTimes(20)
-    expect(svc.autoLoadPaused).toBe(true)
-    expect(svc.qs.bufferQueue).toHaveLength(80)
+    expect(session.partitionPaused).toBe(true)
+    expect(svc.qs.bufferQueue).toHaveLength(40)
   })
 
   it('整次刷新补查共享五秒时间盒，截止后保留未核验内容', async () => {
@@ -564,7 +653,7 @@ describe.each(services)('$name 的实际分区交付', ({ Service, session, tab 
       expect(svc.qs.bufferQueue).toHaveLength(14)
       expect(session.partitionPending).toBe(14)
       expect(session.filterStats.dropped).toBe(0)
-      expect(svc.autoLoadPaused).toBe(true)
+      expect(session.partitionPaused).toBe(true)
     } finally {
       vi.useRealTimers()
     }
@@ -679,7 +768,7 @@ describe('服务级用户旅程', () => {
     // 1) 未知只暂存：已知内容照常交付，不被待核实挡住
     expect(tagRec(await svc.loadMore(signal())).map((video) => video.bvid)).toEqual([known.bvid])
     expect(tagRecCustomSession.partitionPending).toBe(1)
-    expect(svc.autoLoadPaused).toBe(true)
+    expect(tagRecCustomSession.partitionPaused).toBe(true)
 
     // 2) 改条件：旧待核实暂存随之重置，不再卡在旧证据
     tagRecCustomSession.filterOverride = { dims: { titleAllow: { enabled: true, list: ['alpha'] } } }
@@ -774,7 +863,7 @@ describe('主题推荐用户旅程', () => {
 
     expect(tagRec(await svc.loadMore(signal())).map((video) => video.bvid)).toEqual([known.bvid])
     expect(tagRecFavSession.partitionPending).toBe(1)
-    expect(svc.autoLoadPaused).toBe(true)
+    expect(tagRecFavSession.partitionPaused).toBe(true)
 
     tagRecFavSession.filterOverride = { dims: { titleAllow: { enabled: true, list: ['alpha'] } } }
     expect(svc.autoLoadPaused).toBe(false)

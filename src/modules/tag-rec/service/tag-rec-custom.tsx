@@ -38,6 +38,12 @@ import {
   runTagRecFilter,
   runTagRecScoreStage,
   TAG_REC_ALL_POOL_KEYS,
+  TAG_REC_HELD_MAX_ATTEMPTS,
+  TAG_REC_HELD_RETRY_QUOTA,
+  TAG_REC_HELD_REVIVE_MS,
+  TAG_REC_VERIFY_CANDIDATES,
+  TAG_REC_VERIFY_MS,
+  TAG_REC_VERIFY_REQUESTS,
   tagRecChainKeysOf,
   tagRecPoolScopeKey,
   tagRecPoolsForChain,
@@ -95,6 +101,7 @@ import {
 import { createTagRecDeliveryReplay } from './delivery-replay'
 import { spliceTagRecAtomFairSlice, WeightedTurns } from './fair-queue'
 import {
+  clampTagRecLadderOpts,
   FALLBACK_LADDER_STRATEGY_AGGRESSIVE,
   newTagRecLadderState,
   resetTagRecLadderState,
@@ -322,13 +329,10 @@ type TagRecTrialStash = {
     queryCursor: number
     wordCursor: number
     wordWindow: Set<string>
+    digResumeAt: number
   }
 }
 const TRIAL_STASH_CAP = 6
-/** 票 005: 每轮轮转重试的停牌条数上限 —— 补位不吃满整轮核查额度 */
-const TAG_REC_PARTITION_HELD_RETRY_QUOTA = 4
-/** 票 005: 同一条连扑 3 轮放弃轮转 (留队不自愈就停补查; 「重试核实」清零) */
-const TAG_REC_PARTITION_HELD_MAX_ATTEMPTS = 3
 const trialStash = new Map<string, TagRecTrialStash>()
 
 /** 清场前调用: 把当前共享盒整体拷进该试验的暂存档 (值拷贝, 与活容器不共享) */
@@ -366,6 +370,7 @@ function trialStashCapture(trialId: string) {
       queryCursor: s.queryCursor,
       wordCursor: s.wordCursor,
       wordWindow: new Set(s.wordWindow),
+      digResumeAt: s.digResumeAt,
     },
   })
   while (trialStash.size > TRIAL_STASH_CAP) trialStash.delete(trialStash.keys().next().value!)
@@ -420,6 +425,7 @@ function trialStashRestore(trialId: string): boolean {
   s.producedTotal = stash.ladder.producedTotal
   s.queryCursor = stash.ladder.queryCursor
   s.wordCursor = stash.ladder.wordCursor
+  s.digResumeAt = stash.ladder.digResumeAt
   s.digRunning = undefined
   s.epoch++ // 恢复同样换纪元: 暂存期内在途批产出不落回恢复的盒
   s.stockEpoch++ // 收编票: 盒体被暂存档置换 => 在途批按跨盒口径丢弃 (与 reset 同级)
@@ -434,6 +440,11 @@ export function resetTagRecCustomSharedState() {
   tagRecCustomSession.partitionBudgetExhausted = false
   tagRecCustomSession.replayDelivered = 0
   tagRecCustomSession.localFirst = false
+  tagRecCustomSession.supplyPaused = false
+  tagRecCustomSession.allowUnverified = false
+  tagRecCustomSession.digPending = false
+  tagRecCustomSession.digRunning = false
+  tagRecCustomSession.digResumeAt = 0
   sharedUpSearch.reset()
   sharedDryTids.clear()
   sharedMemberSignature = undefined
@@ -733,9 +744,11 @@ export function computeTagRecCustomFilterSignature(withoutSources = false): stri
           : undefined),
     })
   })
+  // 节奏开关 (supplyPaused) 不进签名 —— 它只停取新, 不改核验/过滤语义,
+  //   混入会令切换时掀纪元丢在途批、重置深挖纪律
   return (
     sig +
-    `|pace:${tagRecCustomSession.supplyPaused}|unverified:${tagRecCustomSession.allowUnverified}|globalExclusions:${JSON.stringify([tagRecCombinationBlocks.list, tagRecCombinationBlocks.invalid])}`
+    `|unverified:${tagRecCustomSession.allowUnverified}|globalExclusions:${JSON.stringify([tagRecCombinationBlocks.list, tagRecCombinationBlocks.invalid])}`
   )
 }
 
@@ -769,9 +782,12 @@ export class TagRecCustomService extends BaseTabService {
 
   /**
    * A4-3: 过滤签名构造期钉点 —— drift 判定的「收紧型过滤变更」轴;
-   *   刻意不随 fetchMore 重钉 (放宽侧复活走 seenBvids 通道自愈, 钉点漂移保留给 drift 判定消费)
+   *   刻意不随 fetchMore 重钉 (放宽侧复活走 seenBvids 通道自愈, 钉点漂移保留给 drift 判定消费);
+   *   轻应用已同步生效链 => 原位重钉 (非 readonly, 否则 service 在漂移判定里恒漂移被顶替)
    */
-  readonly filterSignature: string
+  filterSignature: string
+  /** 生效过滤 JSON 基线 (轻应用 no-op 判定): materialize 后内容 —— 勾空名单等无效果编辑不触发重滤 */
+  private effectiveFilterJson?: string
 
   constructor() {
     super(TagRecCustomService.PAGE_SIZE)
@@ -784,6 +800,7 @@ export class TagRecCustomService extends BaseTabService {
     syncCustomFilterState() // 实修票①: 过滤配置漂移 => seenBvids 复位, 放宽后已滤条重获参评资格
     sharedUpSearch.sync(this.recheckPlan().up)
     this.filterSignature = computeTagRecCustomFilterSignature() // A4-3: 构造期钉点 (不随轮重钉)
+    this.effectiveFilterJson = JSON.stringify(this.effectiveFilter())
     this.qs.bufferQueue = sharedBufferQueue // 票 37: 未上屏存货跨刷新存活 (签名变时上行已清)
     this.refilterSharedQueue() // 实修: 配置漂移 (组 override/会话覆盖/全局改) 后刷新, 存货按新生效链重滤
     this.retryPartitions()
@@ -792,17 +809,51 @@ export class TagRecCustomService extends BaseTabService {
   private partitionBudget?: TagRecPartitionBudget
   /** 票 005: 停牌 bvid → 已被暂停轮数 (重试有上限, 不再无限期白吃额度) */
   private partitionHeld = new Map<string, number>()
+  /** 封顶时刻账 (bvid → 达 heldMax 的时刻): 只有封顶条按各自冷却自动复活;
+   *   未封顶条尝试账不受自动续批影响 (否则慢轮转条永远累积不到上限, heldMax 形同虚设) */
+  private partitionHeldCapAt = new Map<string, number>()
   private partitionPausePolicy?: string
   get autoLoadPaused() {
     if (tagRecCustomSession.partitionPaused && this.partitionPausePolicy !== computeTagRecCustomFilterSignature()) {
       this.partitionHeld.clear()
+      this.partitionHeldCapAt.clear()
       this.retryPartitions()
     }
-    return tagRecCustomSession.partitionPaused || (tagRecCustomSession.supplyPaused && !this.qs.bufferQueue.length)
+    return tagRecCustomSession.supplyPaused && !this.qs.bufferQueue.length
   }
-  retryPartitions() {
-    // 票 005: 「重试核实」= 用户明令再试 —— 停牌身份保留 (不开不经核查直出的口子), 尝试数归零再给轮转额度
-    for (const bvid of this.partitionHeld.keys()) this.partitionHeld.set(bvid, 0)
+
+  /** 分区核验/停牌旋钮 —— 读 settings.tagRec.ladder 热更, GM 注入值经 LADDER_BOUNDS 钳制 */
+  private partitionLimits() {
+    const o = clampTagRecLadderOpts(settings.tagRec.ladder)
+    return {
+      requests: o.verifyRequests ?? TAG_REC_VERIFY_REQUESTS,
+      candidates: o.verifyCandidates ?? TAG_REC_VERIFY_CANDIDATES,
+      ms: o.verifyMs ?? TAG_REC_VERIFY_MS,
+      heldQuota: o.heldRetryQuota ?? TAG_REC_HELD_RETRY_QUOTA,
+      heldMax: o.heldMaxAttempts ?? TAG_REC_HELD_MAX_ATTEMPTS,
+    }
+  }
+  retryPartitions(reviveHeld = false) {
+    // 票 005: 停牌身份保留 (不开不经核查直出的口子), 尝试数归零再给轮转额度 ——
+    //   明令再试 (reviveHeld) 全量归零; 自动续批只复活「封顶且各自冷却到期」的条,
+    //   未封顶条继续累积 (每批全清会让慢轮转条永远到不了 heldMax)
+    if (reviveHeld) {
+      for (const bvid of this.partitionHeld.keys()) this.partitionHeld.set(bvid, 0)
+      this.partitionHeldCapAt.clear()
+    } else {
+      const max = this.partitionLimits().heldMax
+      for (const [bvid, attempts] of this.partitionHeld) {
+        if (attempts < max) continue
+        const capAt = this.partitionHeldCapAt.get(bvid)
+        if (capAt === undefined) {
+          this.partitionHeldCapAt.set(bvid, Date.now()) // 无账封顶条: 补记冷却起点
+          continue
+        }
+        if (Date.now() < capAt + TAG_REC_HELD_REVIVE_MS) continue
+        this.partitionHeld.set(bvid, 0)
+        this.partitionHeldCapAt.delete(bvid)
+      }
+    }
     tagRecCustomSession.partitionPaused = false
     tagRecCustomSession.partitionPending = 0
     tagRecCustomSession.partitionAbandoned = 0
@@ -810,10 +861,8 @@ export class TagRecCustomService extends BaseTabService {
   }
   beginLoadOperation(signal: AbortSignal) {
     this.endLoadOperation()
-    this.partitionBudget = new TagRecPartitionBudget(
-      signal,
-      tagRecCustomSession.supplyPaused ? { requests: 0, candidates: 40, ms: 5_000 } : undefined,
-    )
+    const limits = this.partitionLimits()
+    this.partitionBudget = new TagRecPartitionBudget(signal, limits)
   }
   endLoadOperation() {
     this.partitionBudget?.dispose()
@@ -891,7 +940,7 @@ export class TagRecCustomService extends BaseTabService {
       )
         candidates.set(item.bvid, item)
     const pending = [...candidates.values()].slice(0, 20)
-    const budget = new TagRecPartitionBudget(signal, { requests: 20, candidates: 40, ms: 5_000 })
+    const budget = new TagRecPartitionBudget(signal, this.partitionLimits())
     let cursor = 0
     let updated = 0
     let attempted = 0
@@ -967,7 +1016,7 @@ export class TagRecCustomService extends BaseTabService {
       })
   }
   override restore() {
-    this.retryPartitions()
+    this.retryPartitions(true)
     super.restore()
     // 审计: returnQueue 把带「回放」标的克隆回队 —— 标是展示态, 回存货前剥掉
     for (const it of this.qs.bufferQueue) if (it.api === EApiType.TagRec) delete (it as TagRecItemExtend).tagRecReplayed
@@ -1309,6 +1358,43 @@ export class TagRecCustomService extends BaseTabService {
   }
 
   /**
+   * 临时过滤轻应用 (过滤面板离场): 重滤存货队列 + 同步签名/纪元 (与重建同口径的簿记) ——
+   *   不重建 service、不发请求; 已上屏条目由调用侧经 refilterDisplayed 原位重过一遍。
+   * 生效过滤未变 (如勾了空名单/无效果编辑) => 返回 false 整体跳过 —— 不翻纪元不重滤不动画面。
+   */
+  applySessionFilterLive(): boolean {
+    const next = JSON.stringify(this.effectiveFilter())
+    if (this.effectiveFilterJson === next) return false
+    this.effectiveFilterJson = next
+    syncCustomFilterState()
+    // 语境签名含组合过滤段 (tagRecCombinationSignature 计入 filters): 组合对象被镜像换身后
+    //   钉点过期 => isSessionStale() 恒真、交付循环静默空转 (此前仅 fetchMore 内同步可自愈,
+    //   队列有货不走取数的路径永远卡死); 共享态簿记 (深挖流作废/轮次纪元/计数归零) 提前到位
+    this.contextSignature = syncCustomSharedState().sig
+    this.filterSignature = computeTagRecCustomFilterSignature()
+    this.refilterSharedQueue()
+    // 过滤已变 => 旧「硬见底」判据失效 (可能正是旧过滤滤空所致): 复位硬见底闩让补货重新评估;
+    //   新过滤下若仍零产, 下一轮 exhaustRound 会复置 (同 fetchMore 开头清 hardBottom 的先例)
+    this.hasMoreExceptQueue = true
+    tagRecCustomSession.hardBottom = false
+    return true
+  }
+
+  /**
+   * 按新生效链过滤已上屏条目 (轻应用用): 缺证据维按缺字段豁免语义放行 (不触发核验、不计滤除账),
+   *   核验预算/待决流转仍由后续 loadMore 的常规管线承担。
+   */
+  refilterDisplayed(items: TagRecItemExtend[]): TagRecItemExtend[] {
+    return runTagRecFilter(items, {
+      resolve: this.scopeResolver(),
+      queryMatches: this.queryMatcher(),
+      pools: tagRecNegativePools(),
+      deferPartitions: true,
+      relatedFallback: this.relatedFallbackOn(),
+    }).items
+  }
+
+  /**
    * 交集下 related 只是兜底料 —— 兜底门 (degraded) 不开时选种产物纯死库存 (只堆不吐),
    *   且选种要烧名单补查 + archive/related 页请求; 这些火力交集下应留给 all/v2。
    */
@@ -1405,12 +1491,7 @@ export class TagRecCustomService extends BaseTabService {
   override async loadMore(abortSignal: AbortSignal): Promise<RecItemTypeOrSeparator[] | undefined> {
     if (abortSignal.aborted || this.autoLoadPaused) return
     const local = !this.partitionBudget
-    const budget =
-      this.partitionBudget ??
-      new TagRecPartitionBudget(
-        abortSignal,
-        tagRecCustomSession.supplyPaused ? { requests: 0, candidates: 40, ms: 5_000 } : undefined,
-      )
+    const budget = this.partitionBudget ?? new TagRecPartitionBudget(abortSignal, this.partitionLimits())
     try {
       return await this.loadPartitionChecked(abortSignal, budget)
     } finally {
@@ -1483,8 +1564,9 @@ export class TagRecCustomService extends BaseTabService {
     syncCustomFilterState()
     if (oldFilter !== sharedFilterSignature) {
       this.partitionHeld.clear()
+      this.partitionHeldCapAt.clear()
       // 审计: 账目清空同步清会话计数 —— 否则本轮早退会把过期的「待核实/放弃/额度尽」留在横幅
-      this.retryPartitions()
+      this.retryPartitions(true)
     }
     if (oldFilter !== sharedFilterSignature || sharedCandidates.needsRefilter) this.refilterSharedQueue()
     if (!this.hasMore) return
@@ -1555,12 +1637,13 @@ export class TagRecCustomService extends BaseTabService {
     const rounds: TagRecFilterRoundStats[] = []
     const atomKeysOf = combination && validateTagRecCombination(combination) ? this.atomKeysOf(combination) : undefined
     const isStaleContext = this.stalePredicate()
+    const limits = this.partitionLimits()
     const working = tagRecPartitionWorkQueue(
       this.qs.bufferQueue,
       this.partitionHeld,
       isStaleContext,
-      TAG_REC_PARTITION_HELD_RETRY_QUOTA,
-      (bvid) => (this.partitionHeld.get(bvid) ?? 0) < TAG_REC_PARTITION_HELD_MAX_ATTEMPTS,
+      limits.heldQuota,
+      (bvid) => (this.partitionHeld.get(bvid) ?? 0) < limits.heldMax,
     )
     for (let pass = 0; pass < 2 && delivered.length < this.qs.ps; pass++) {
       const want = this.qs.ps - delivered.length
@@ -1588,7 +1671,7 @@ export class TagRecCustomService extends BaseTabService {
         this.scopeResolver(),
         abortSignal,
         this.queryMatcher(),
-        !tagRecCustomSession.supplyPaused,
+        true,
         budget, // 审计 §1: 严格核验与分区/素材核验共享整次刷新预算
       )
       if (abortSignal.aborted || this.isSessionStale() || policy !== computeTagRecCustomFilterSignature()) return
@@ -1619,11 +1702,17 @@ export class TagRecCustomService extends BaseTabService {
       this.partitionHeld,
       held.filter((it): it is TagRecItemExtend => it.api === EApiType.TagRec),
       remaining,
-      TAG_REC_PARTITION_HELD_MAX_ATTEMPTS,
+      limits.heldMax,
       attemptedBvids,
     )
+    // 封顶时刻记账 (per-entry 冷却起点): 首达上限即记; 离场条随账目清
+    for (const [bvid, attempts] of this.partitionHeld)
+      if (attempts >= limits.heldMax && !this.partitionHeldCapAt.has(bvid))
+        this.partitionHeldCapAt.set(bvid, Date.now())
+    for (const bvid of this.partitionHeldCapAt.keys())
+      if (!this.partitionHeld.has(bvid)) this.partitionHeldCapAt.delete(bvid)
     tagRecCustomSession.partitionAbandoned = [...this.partitionHeld.values()].filter(
-      (attempts) => attempts >= TAG_REC_PARTITION_HELD_MAX_ATTEMPTS,
+      (attempts) => attempts >= limits.heldMax,
     ).length
     tagRecCustomSession.partitionPending = this.partitionHeld.size
     // 审计回填 (A3): stale 条不算鲜货 —— 队列只剩「停牌 ∪ 残留」时 freshRemaining 误真,
@@ -1631,10 +1720,9 @@ export class TagRecCustomService extends BaseTabService {
     const freshRemaining = this.qs.bufferQueue.some(
       (item) => item.api === EApiType.TagRec && !this.partitionHeld.has(item.bvid) && !isStaleContext?.(item),
     )
-    tagRecCustomSession.partitionPaused =
-      (pending.size > 0 && !freshRemaining) || (!tagRecCustomSession.supplyPaused && budget.exhausted && this.hasMore)
-    // 票 006: 「额度用尽」也是停牌原因之一 (供给暂停下预算是 0, 那个闸由 supplyPaused 原因单独说)
-    tagRecCustomSession.partitionBudgetExhausted = !tagRecCustomSession.supplyPaused && budget.exhausted && this.hasMore
+    tagRecCustomSession.partitionPaused = (pending.size > 0 && !freshRemaining) || (budget.exhausted && this.hasMore)
+    // 票 006: 「额度用尽」也是停牌原因之一
+    tagRecCustomSession.partitionBudgetExhausted = budget.exhausted && this.hasMore
     if (tagRecCustomSession.partitionPaused) this.partitionPausePolicy = policy
     const tagStats = tagRecCustomSession.filterStats
     for (const stats of rounds) {
@@ -1708,6 +1796,7 @@ export class TagRecCustomService extends BaseTabService {
     // [tag-rec] 新轮开始清硬见底镜像+深挖待决态; 本轮真产出 0 由 exhaustRound(content) 复置 (横幅判据, 票 09/票 13)
     tagRecCustomSession.hardBottom = false
     tagRecCustomSession.digPending = sharedUpSearch.pending && sharedUpSearch.hasAnyMore
+    this.syncDigResumeMirror()
     // ———— 轮次管线 (spec §4.3; 主干共享 service/_pipeline.ts, 票 05) ————
 
     // 1) 查询单元 = 选中组并集 ∪ 临时输入 id (spec §4.3 tab2 选组 = 选中组并集; 票 07 接线)
@@ -2074,8 +2163,8 @@ export class TagRecCustomService extends BaseTabService {
   /**
    * 票 32 首载/变员预热 (后台不阻塞, fetchMore 内 tag/top 入闸后调用):
    *   选定组同义词簇流 (D7 同款) + 每个扩选 id 一条独立流 (key=归一名, 归因=tag 名同查询单元口径),
-   *   顺手一发 manual 深挖与 tag/top 并行 —— 深挖条目仍经 queue/heap 管线不直喂,
-   *   manual 档不占 auto 三停计数 (预热是投机动作不该烧穿深挖纪律); 退避期不点火 (请求纪律不放宽)
+   *   顺手一发 auto 深挖与 tag/top 并行 —— 深挖条目仍经 queue/heap 管线不直喂,
+   *   auto 档照走三停/配额纪律 (预热即正规自动批, 停轮后由休息自愈续); 退避期不点火 (请求纪律不放宽)
    */
   private warmupDigStreams(groups: readonly TagGroup[], signal: AbortSignal, inputKeywords: ReadonlySet<string>) {
     if (tagRecBackoff.isEngaged) return
@@ -2092,7 +2181,10 @@ export class TagRecCustomService extends BaseTabService {
       // 票 36: 扩选独立流建流 —— sediment dig 水合收敛在 addStream 内 (keyword 等值续页/活终态)
       this.ladder.addStream({ key, keyword: e.name, attribution: [e.name], input: true })
     }
-    if (!this.ladder.canAutoDig()) return
+    if (!this.ladder.canAutoDig()) {
+      this.syncDigResumeMirror() // 判定可能上膛休息位 —— 早退也要把排程交给续批
+      return
+    }
     void this.ladder
       .digPass('auto', signal)
       .catch(() => 0)
@@ -2216,17 +2308,24 @@ export class TagRecCustomService extends BaseTabService {
       this.hasMoreExceptQueue = true
       tagRecCustomSession.digPending = false
       tagRecCustomSession.hardBottom = false
+      this.syncDigResumeMirror()
       return Promise.resolve()
     }
     if (tagRecBackoff.isEngaged) {
-      toast('退避中,恢复后再挖')
+      if (!automatic) toast('退避中,恢复后再挖')
       return Promise.resolve()
     }
-    if (!this.ladder.hasDueStreams()) return Promise.resolve()
+    if (!this.ladder.hasDueStreams()) {
+      // 无 due 流 => 待决态无对象 (冷却排程另由 digResumeAt 承担): 清位防续批 60s 空转
+      tagRecCustomSession.digPending = false
+      this.syncDigResumeMirror()
+      return Promise.resolve()
+    }
     // 审计 §5: 滚动触发的自动续批走 auto 档 —— 扣自动预算/低产纪律; 耗尽即转手动待决,
     //   等用户点「继续发掘」才按 manual 发 (此前误走 manual, 固定三批等自动上限不生效)
     if (automatic && !this.ladder.canAutoDig()) {
       tagRecCustomSession.digPending = true
+      this.syncDigResumeMirror()
       return Promise.resolve()
     }
     return tagRecRecallScheduler.withForegroundSupply(() => this.startPhase2(automatic ? 'auto' : 'manual'))
@@ -2255,6 +2354,12 @@ export class TagRecCustomService extends BaseTabService {
     p2.exhausted = ladder2.exhausted
     p2.autoDigs = ladder2.autoDigs
     p2.lastDigYield = ladder2.lastDigYield
+    this.syncDigResumeMirror()
+  }
+
+  /** 休息/流冷却排程镜像 —— RecGrid 续批订阅位; 每个 dig 状态早退/落定点都要刷, 防陈旧位空转或漏唤醒 */
+  private syncDigResumeMirror() {
+    tagRecCustomSession.digResumeAt = this.ladder.resumeAt()
   }
 
   /**

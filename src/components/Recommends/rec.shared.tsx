@@ -21,6 +21,7 @@ export type RecSharedEmitterEvents = {
   'refresh': Parameters<RefreshFn>[0]
   'load-more': undefined // [tag-rec]
   'tag-rec:continue': undefined // Explicit continuation appends even when the footer is outside the viewport.
+  'tag-rec:apply-session-filter': undefined // [tag-rec] 临时过滤面板离场: 重滤现有存货与已上屏条目 (不重建/不重拉)
   'load-to-end': undefined
   'remove-cards': [
     uniqIds: string[],

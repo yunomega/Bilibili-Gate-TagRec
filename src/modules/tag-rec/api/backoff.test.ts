@@ -1,5 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { BackoffGate, isRiskControlError, isRiskControlResponse, RiskControlError } from './backoff'
+import {
+  BackoffGate,
+  isRiskControlError,
+  isRiskControlResponse,
+  RiskControlError,
+  TagRecSlidingWindowGate,
+} from './backoff'
 const fakeRes = (status: number, data: unknown) => ({ status, data })
 beforeEach(() => {
   vi.useFakeTimers()
@@ -109,14 +115,17 @@ describe('request pacing and backoff', () => {
     expect(Date.now()).toBe(1_350)
   })
 
-  it('backs off from 4 seconds exponentially, caps the local interval, and reports state transitions', () => {
+  it('backs off from 4 seconds, jumps to 30s on the second consecutive hit, caps at 60s, and reports transitions', () => {
     const gate = new BackoffGate()
     const change = vi.fn()
     gate.onStateChange = change
     gate.onRiskControl()
     expect(gate.currentIntervalMs).toBe(4_000)
+    // 连续退避逐级加深: 第 2 次直接跳 30s 档, 第 3 次起 60s
     gate.onRiskControl()
-    expect(gate.currentIntervalMs).toBe(8_000)
+    expect(gate.currentIntervalMs).toBe(30_000)
+    gate.onRiskControl()
+    expect(gate.currentIntervalMs).toBe(60_000)
     for (let i = 0; i < 10; i++) gate.onRiskControl()
     expect(gate.currentIntervalMs).toBe(60_000)
     expect(change).toHaveBeenCalledWith(true, 4_000)
@@ -248,5 +257,28 @@ describe('request pacing and backoff', () => {
     )
     await Promise.all(Array.from({ length: 20 }, () => gate.waitTurn()))
     expect(now).toBe(19 * BackoffGate.NORMAL_INTERVAL_MS)
+  })
+})
+
+describe('search 滑动窗平滑', () => {
+  it('窗内 12 发直通, 第 13 发等最老时间戳滑出后放行', async () => {
+    const gate = new TagRecSlidingWindowGate(12, 10_000)
+    for (let i = 0; i < 12; i++) await gate.acquire()
+    let settled = false
+    const blocked = gate.acquire().then(() => (settled = true))
+    await vi.advanceTimersByTimeAsync(9_000)
+    expect(settled).toBe(false) // 最老发尚未滑出
+    await vi.advanceTimersByTimeAsync(1_100)
+    await blocked
+    expect(settled).toBe(true)
+  })
+
+  it('等待中 abort 立即拒绝', async () => {
+    const gate = new TagRecSlidingWindowGate(1, 10_000)
+    await gate.acquire()
+    const controller = new AbortController()
+    const pending = gate.acquire(controller.signal)
+    controller.abort()
+    await expect(pending).rejects.toMatchObject({ name: 'AbortError' })
   })
 })

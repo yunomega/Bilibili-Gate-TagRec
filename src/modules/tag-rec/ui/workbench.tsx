@@ -119,6 +119,22 @@ function cooccurLedgerSet<T>(map: Map<string, T>, key: string, value: T) {
   while (map.size > COOCCUR_KEY_CAP) map.delete(map.keys().next().value!)
 }
 
+/**
+ * 「继续挖共现」有效下一页: 与深挖流共享「这个词已拉到第几页」的知识 ——
+ * 深挖流游标只顺吃连续成功段 (nextPage-1 = 已确认拉过的最大页), 故同词 (精确等值, 同 norm
+ * 不同拼写结果集不同) 手动翻页从深挖游标起跳, 不重复搜索同一页。
+ * 无深挖记录/拼写不同 => 只看手动游标 (旧行为)。
+ */
+export function cooccurEffectiveNextPage(
+  ownCursor: number,
+  dig: { keyword: string; nextPage: number } | undefined,
+  name: string,
+): number {
+  const own = ownCursor + 1
+  const floor = dig && dig.keyword === name && Number.isFinite(dig.nextPage) ? Math.max(1, Math.floor(dig.nextPage)) : 1
+  return Math.max(own, floor)
+}
+
 function groupsOf(node: TagRecConditionGroup): TagRecConditionGroup[] {
   return [node, ...node.children.flatMap((child) => (child.kind === 'group' ? groupsOf(child) : []))]
 }
@@ -184,6 +200,9 @@ export function TagRecWorkbenchView({ service }: { service: TagRecCustomService 
   const [committing, setCommitting] = useState(false)
   const [batch, setBatch] = useState(false)
   const [recentLimit, setRecentLimit] = useState(8)
+  /** 点击标签才解析的使用数 (norm → use; null=已解析无值): 仅点击触发, 不预付任何请求 */
+  const [materialUse, setMaterialUse] = useState<Record<string, number | null>>({})
+  const materialUseRequested = useRef(new Set<string>())
   const display = useSnapshot(tagRecDiscoveryPreferences)
   const discoveryUi = useSnapshot(tagRecDiscoveryUi)
   // Q9: 共现语料行数据源 —— 沉淀池快照, 深挖累积写入即触发重算 (零请求)
@@ -243,22 +262,22 @@ export function TagRecWorkbenchView({ service }: { service: TagRecCustomService 
     }
   }, [])
   // Merge committed condition edits into one refresh. Typing in the material input never reaches this subscription.
+  // 纯过滤变更 (镜像原地改组合 filters) 不入 key 也不换对象身份: 编辑中途不整页重建 —— 由过滤面板
+  //   离场的轻应用原位重滤生效。workingGroup 对象被替换 (切试验/撤销/同步/关闭) 一律刷新 ——
+  //   即使新试验只在 filters 上有差异, 显示也不会滞留旧生效链。
   useEffect(() => {
-    let previous = JSON.stringify([
-      tagRecCustomSession.workingGroup,
-      tagRecCustomSession.allowUnverified,
-      tagRecCombinationBlocks.list,
-      tagRecCombinationBlocks.invalid,
-    ])
+    const refreshKeyOf = (wg: typeof tagRecCustomSession.workingGroup) => {
+      const conditionsOnly = wg?.combination ? { ...wg, combination: { ...wg.combination, filters: undefined } } : wg
+      return JSON.stringify([conditionsOnly, tagRecCombinationBlocks.list, tagRecCombinationBlocks.invalid])
+    }
+    let previousWg = tagRecCustomSession.workingGroup
+    let previous = refreshKeyOf(previousWg)
     let timer: ReturnType<typeof setTimeout> | undefined
     const changed = () => {
-      const next = JSON.stringify([
-        tagRecCustomSession.workingGroup,
-        tagRecCustomSession.allowUnverified,
-        tagRecCombinationBlocks.list,
-        tagRecCombinationBlocks.invalid,
-      ])
-      if (next === previous) return
+      const wg = tagRecCustomSession.workingGroup
+      const next = refreshKeyOf(wg)
+      if (next === previous && wg === previousWg) return
+      previousWg = wg
       previous = next
       clearTimeout(timer)
       timer = setTimeout(() => onRefreshRef.current('refresh'), 250)
@@ -316,6 +335,23 @@ export function TagRecWorkbenchView({ service }: { service: TagRecCustomService 
       toast('已加入全局排除，可在此工作台直接移除')
     } else if (asExclude) excludeTagRecWorkingCondition(atom)
     else addTagRecWorkingCondition(atom, target)
+  }
+  /** 标签素材点击时惰性解析使用数 (tag/info 三级缓存: 持久层命中零请求) —— 仅点击触发, 不提前调用 */
+  const resolveMaterialUse = (material: Material) => {
+    const tagLike = material.atom ? material.atom.field === 'tag' : !material.filter
+    if (!tagLike) return
+    const norm = normalizeTagName(material.name)
+    if (norm in materialUse || materialUseRequested.current.has(norm)) return
+    materialUseRequested.current.add(norm)
+    void fetchTagInfoByName(material.name)
+      .then((info) => {
+        if (!info) {
+          materialUseRequested.current.delete(norm) // 未解析到: 下次点击可重试
+          return
+        }
+        setMaterialUse((prev) => ({ ...prev, [norm]: info.use ?? null }))
+      })
+      .catch(() => materialUseRequested.current.delete(norm))
   }
   const findMaterials = async (raw = query, fieldSel = field) => {
     const input = raw.trim()
@@ -436,30 +472,33 @@ export function TagRecWorkbenchView({ service }: { service: TagRecCustomService 
     // Finding material never changes the effective combination; selection is explicit.
     if (!unique.length) toast('暂未找到素材，可直接选标题词、简介词或 UP UID')
   }
+  /** 锚点有效下一页 (深挖游标共享): 深挖已成功拉过的页不重复搜索 —— 详见 cooccurEffectiveNextPage */
+  const cooccurNextPage = (anchor: { norm: string; name: string }) =>
+    cooccurEffectiveNextPage(cooccurDigCursor.get(anchor.norm) ?? 0, sedimentMap.get(anchor.norm)?.dig, anchor.name)
   /** Q9: 「继续挖共现」—— 锚点 = 当前组合的 tag 条件全集 (以用户已选为准); 每点一次给
    *   「挖得最少」的锚点拉下一页搜索结果, 共现词累加并入快照行 (新词追加/同词计数相加);
    *   语料行不受影响。无 tag 条件时退回输入词 (旧行为)。
    *   生命周期与首查同轨 (searchRef/searchRevision): 换词/换试验/重查后在途结果落定即弃;
    *   失败页不推进游标 (下点重试同页); 全部锚点挖到 ALLV2_PAGE_CAP 即终态不再发请求;
-   *   共现统计按锚点内 bvid 去重 —— 同页重拉或翻页重叠不再反复累计。 */
+   *   共现统计按锚点内 bvid 去重 —— 同页重拉或翻页重叠不再反复累计;
+   *   起跳页 = max(手动游标, 深挖游标) —— 深挖拉过的页跳过不重拉 (数据已进沉淀语料)。 */
   const digCooccurMore = async () => {
-    const alive = cooccurAnchors.filter((a) => (cooccurDigCursor.get(a.norm) ?? 0) < ALLV2_PAGE_CAP)
+    const alive = cooccurAnchors.filter((a) => cooccurNextPage(a) <= ALLV2_PAGE_CAP)
     if (!alive.length) {
       toast(`已挖到搜索末页（每词共 ${ALLV2_PAGE_CAP} 页），可换词重查`)
       return
     }
-    const target = alive.reduce((a, b) =>
-      (cooccurDigCursor.get(a.norm) ?? 0) <= (cooccurDigCursor.get(b.norm) ?? 0) ? a : b,
-    )
+    const target = alive.reduce((a, b) => (cooccurNextPage(a) <= cooccurNextPage(b) ? a : b))
     const key = target.norm
-    const cursor = cooccurDigCursor.get(key) ?? 0
+    const ownNext = (cooccurDigCursor.get(key) ?? 0) + 1
     searchRef.current?.abort()
     const controller = new AbortController()
     searchRef.current = controller
     const revision = ++searchRevision.current
     setBusy(true)
     try {
-      const page = cursor + 1
+      const page = cooccurNextPage(target)
+      const skipped = page - ownNext
       const res = await fetchAllV2Search(target.name, { page, signal: controller.signal }).then(
         (v) => ({ v }),
         () => undefined,
@@ -485,9 +524,10 @@ export function TagRecWorkbenchView({ service }: { service: TagRecCustomService 
           .sort((a, b) => b.count - a.count)
           .map((alias): Material => ({ name: alias.name, source: '共现', count: alias.count })),
       ])
+      const skipNote = skipped > 0 ? `（已跳过深挖拉过的 ${skipped} 页）` : ''
       toast(
         videos.length
-          ? `已拉「${target.name}」第 ${page} 页 · 共现词已累加并入`
+          ? `已拉「${target.name}」第 ${page} 页${skipNote} · 共现词已累加并入`
           : `「${target.name}」第 ${page} 页无结果，可稍后再试`,
       )
     } finally {
@@ -734,10 +774,10 @@ export function TagRecWorkbenchView({ service }: { service: TagRecCustomService 
   }, [combination, query])
   // Q9: 锚点集已挖页数合计 (模块级游标, 非响应式, 随 busy/query 重渲染刷新)
   const cooccurPage = cooccurAnchors.reduce((sum, a) => sum + (cooccurDigCursor.get(a.norm) ?? 0), 0)
-  const cooccurExhausted =
-    !cooccurAnchors.length || cooccurAnchors.every((a) => (cooccurDigCursor.get(a.norm) ?? 0) >= ALLV2_PAGE_CAP)
+  const cooccurExhausted = !cooccurAnchors.length || cooccurAnchors.every((a) => cooccurNextPage(a) > ALLV2_PAGE_CAP)
   // 共现双源 (Q9): 语料行 = 累积沉淀池对「查询锚点 ∪ 组合标签」的共现邻域, 零请求、随深挖自动长;
-  //   与本次搜索快照行并列展示 —— 剔除已在组合/排除/全局排除的词, 以及与快照行重名的词。
+  //   与本次搜索快照行并列展示 —— 剔除已在组合/排除/全局排除的词, 以及与快照行重名的词;
+  //   重名词的语料计数并进快照行芯片 (快照行不会随深挖更新, 语料才是累积真相 —— 见 corpusCountByNorm)。
   const corpusRows = useMemo(() => {
     const norms = new Set<string>()
     const queryNorm = normalizeTagName(query)
@@ -761,6 +801,8 @@ export function TagRecWorkbenchView({ service }: { service: TagRecCustomService 
         .map((row) => ({ name: row.name, source: '共现' as const, count: row.count, corpus: true })),
     [corpusRows, materials],
   )
+  /** 重名词: 快照行芯片附带的累积语料计数 (随深挖自动长 —— 快照计数冻在首查, 语料才是累积真相) */
+  const corpusCountByNorm = useMemo(() => new Map(corpusRows.map((row) => [row.norm, row.count])), [corpusRows])
   // 「收藏素材」源: 借了组才摊平那组的条件 (层级树模式不消费平铺列表, 跳过死计算)
   const savedMaterials = useMemo(() => {
     if (!borrow) return []
@@ -968,6 +1010,12 @@ export function TagRecWorkbenchView({ service }: { service: TagRecCustomService 
       )
     const pending = picks.some((entry) => tagRecMaterialKey(entry as Material) === tagRecMaterialKey(material))
     const tone = materialTone(material)
+    const use = materialUse[normalizeTagName(material.name)]
+    // 重名词: 快照行附累积语料计数 (自动深挖持续更新它; 快照计数只代表首查那次)
+    const corpusCount =
+      material.source === '共现' && !material.corpus
+        ? corpusCountByNorm.get(normalizeTagName(material.name))
+        : undefined
     return (
       <Dropdown
         key={`${tagRecMaterialKey(material)}:${index}`}
@@ -1004,7 +1052,7 @@ export function TagRecWorkbenchView({ service }: { service: TagRecCustomService 
       >
         <Button
           size='small'
-          title={`${material.atom ? TAG_REC_CONDITION_FIELDS[material.atom.field] : material.filter ? '过滤' : '标签'} · ${material.name}${material.exclude ? '（不看）' : ''}${material.count ? ` · ${material.corpus ? '语料' : '共现'} ${material.count}` : ''}`}
+          title={`${material.atom ? TAG_REC_CONDITION_FIELDS[material.atom.field] : material.filter ? '过滤' : '标签'} · ${material.name}${material.exclude ? '（不看）' : ''}${material.count ? ` · ${material.corpus ? '语料' : '共现'} ${material.count}` : ''}${corpusCount !== undefined ? ` · 语料 ${corpusCount}` : ''}`}
           style={{
             maxWidth: '100%',
             height: 'auto',
@@ -1018,6 +1066,7 @@ export function TagRecWorkbenchView({ service }: { service: TagRecCustomService 
             fontWeight: selected || pending ? 600 : undefined,
           }}
           onClick={() => {
+            resolveMaterialUse(material)
             if (batch) stage(material)
             else if (selected) removeTagRecWorkingCondition(selected.id)
             else void selectTagRecMaterial(material, target)
@@ -1028,6 +1077,8 @@ export function TagRecWorkbenchView({ service }: { service: TagRecCustomService 
           {material.name}
           {material.exclude ? '（不看）' : ''}
           {material.count ? ` · ${material.corpus ? '语料' : '共现'} ${material.count}` : ''}
+          {corpusCount !== undefined ? ` · 语料 ${corpusCount}` : ''}
+          {typeof use === 'number' ? ` · 使用 ${use.toLocaleString()}` : ''}
           {selected ? ' ✓' : pending ? ' · 已暂选' : ''}
         </Button>
       </Dropdown>
@@ -1604,6 +1655,7 @@ export function TagRecWorkbenchView({ service }: { service: TagRecCustomService 
           size='small'
           type='text'
           onClick={() => {
+            // 撤销替换 trial.group (workingGroup 换对象身份) => 刷新订阅照常整页刷新, 覆盖条件与过滤两种回退
             if (!undoTagRecWorkingGroup()) toast('没有可撤销的条件改动')
           }}
         >
@@ -1719,7 +1771,9 @@ export function TagRecWorkbenchView({ service }: { service: TagRecCustomService 
             type='text'
             onClick={() => {
               tagRecCustomSession.allowUnverified = !tagRecCustomSession.allowUnverified
-              service.retryPartitions()
+              service.retryPartitions(true)
+              // allowUnverified 不入刷新订阅 key (过滤镜像复位它时不该整页刷新): 显式开关自带一次刷新
+              onRefresh('refresh')
             }}
           >
             {session.allowUnverified ? '恢复暂存' : '暂时查看未核实内容'}

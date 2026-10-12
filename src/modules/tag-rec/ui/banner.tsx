@@ -235,7 +235,7 @@ export function TagRecBanner({
     // 票 13 D8: tab1 硬见底尾附本轮抽中组名 (中性陈述, 不写「已抽干的组」归因)
     const drawnSuffix =
       state === 'hard-bottom' && snap.drawnGroupNames?.length ? ` · 抽中组: ${snap.drawnGroupNames.join('、')}` : ''
-    const title = state === 'hard-bottom' ? `本轮没有新结果${drawnSuffix}` : '池底保底已展开 · 自动深挖已达上限'
+    const title = state === 'hard-bottom' ? `本轮没有新结果${drawnSuffix}` : '池底保底已展开 · 歇息片刻后自动续挖'
     stateAlert = (
       <Alert
         type={state === 'hard-bottom' ? 'warning' : 'info'}

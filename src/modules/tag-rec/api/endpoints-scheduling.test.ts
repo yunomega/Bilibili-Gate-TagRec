@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { RiskControlError, tagRecBackoff } from './backoff'
+import { __resetTagRecSearchGateForTest, RiskControlError, tagRecBackoff } from './backoff'
 import { anonGetJson, fetchAllV2Search, fetchTagTop } from './endpoints'
 import { tagRecRecallScheduler } from './recall-scheduler'
 import { gmAnonGet, type GmAnonResponse } from './request'
@@ -26,6 +26,7 @@ describe('匿名请求调度', () => {
   beforeEach(() => {
     vi.restoreAllMocks()
     vi.mocked(gmAnonGet).mockReset()
+    __resetTagRecSearchGateForTest()
     tagRecBackoff.onSuccess()
     vi.spyOn(tagRecBackoff, 'waitTurn').mockResolvedValue(0)
   })

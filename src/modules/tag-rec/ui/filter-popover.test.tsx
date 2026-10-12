@@ -48,7 +48,10 @@ vi.mock('antd', async (importOriginal) => {
 })
 vi.mock('$common', () => ({ appWarn: vi.fn() }))
 vi.mock('$common/emotion-css', () => ({ usePopoverBorderColor: () => '#ddd' }))
-vi.mock('$components/Recommends/rec.shared', () => ({ useOnRefresh: () => vi.fn(), useRecSelfContext: vi.fn() }))
+vi.mock('$components/Recommends/rec.shared', () => ({
+  useOnRefresh: () => vi.fn(),
+  useRecSelfContext: () => ({ recSharedEmitter: { emit: vi.fn() } }),
+}))
 vi.mock('$components/_base/HelpInfo', () => ({ HelpInfo: () => null }))
 vi.mock('$modules/antd', () => ({ antModal: {} }))
 vi.mock('$modules/antd/custom', () => ({ AntdTooltip: ({ children }: { children: unknown }) => children }))

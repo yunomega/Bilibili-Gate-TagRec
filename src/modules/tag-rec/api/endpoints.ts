@@ -10,6 +10,7 @@ import {
   RiskControlError,
   tagRecBackoff,
   tagRecLimit,
+  tagRecSearchGate,
 } from './backoff'
 import { ensureTagRecFingerprint, fingerprintCookieHeader } from './fingerprint'
 import { getCachedTagRecPartition, rememberTagRecPartition } from './partition-cache'
@@ -17,6 +18,7 @@ import { tagRecRecallScheduler } from './recall-scheduler'
 import { gmAnonGet, type GmAnonResponse } from './request'
 import { retryAfterDelay } from './retry-after'
 import { recordAnonRequest } from './risk-log'
+import { getTagRecSamplingView } from './sampling-view'
 import { SessionFetchCache } from './session-fetch-cache'
 import { getPersistedTagInfoById, getPersistedTagInfoByName, persistTagInfo } from './tag-info-store'
 import { rememberTagRecVideoEvidence } from './video-evidence-store'
@@ -67,7 +69,9 @@ export async function anonGetJson(
 ): Promise<unknown> {
   // [tag-rec] AUDIT-32: ensure 不随调用方 signal —— abort 本会话级请求不该致残指纹支路
   if (signal?.aborted) throw new DOMException('Aborted', 'AbortError')
-  await ensureTagRecFingerprint(signal) // Cancel this waiter promptly without cancelling shared SPI.
+  const accountView = getTagRecSamplingView() === 'account'
+  // 账号视角不发指纹 (省 SPI 请求+免身份混注): 服务端见的是用户真实 cookie, 非 buvid 指纹
+  if (!accountView) await ensureTagRecFingerprint(signal) // Cancel this waiter promptly without cancelling shared SPI.
   if (signal?.aborted) throw new DOMException('Aborted', 'AbortError')
   return limit(async () => {
     let lastErr: unknown
@@ -78,7 +82,13 @@ export async function anonGetJson(
           const sentEpoch = await tagRecBackoff.waitTurn(signal)
           let res: GmAnonResponse
           try {
-            res = await gmAnonGet(url, params, signal, fingerprintCookieHeader())
+            res = await gmAnonGet(
+              url,
+              params,
+              signal,
+              accountView ? undefined : fingerprintCookieHeader(),
+              !accountView,
+            )
           } catch (e) {
             recordAnonRequest({ endpoint: url, attempt, params, err: e })
             if (isRiskControlError(e)) tagRecBackoff.onRiskControl()
@@ -354,7 +364,12 @@ export function fetchAllV2Search(
     async (entrySignal) => {
       const json = (await tagRecRecallScheduler.run(
         // allV2Limit 外套 (不替换 limit 参): 搜索请求同时占 tagRecLimit 槽 —— 全局并发上限不被绕过
-        () => allV2Limit(() => anonGetJson('/x/web-interface/search/all/v2', { keyword, page }, entrySignal)),
+        () =>
+          allV2Limit(async () => {
+            // search 专用节奏平滑 (滑动窗排队, 见 backoff.ts) —— 深挖批不瞬时挤爆网络
+            await tagRecSearchGate.acquire(entrySignal)
+            return anonGetJson('/x/web-interface/search/all/v2', { keyword, page }, entrySignal)
+          }),
         entrySignal,
       )) as AllV2SearchJson
       if (!isWebApiSuccess(json)) {

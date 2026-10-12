@@ -30,25 +30,25 @@ import type { TagIdEntry } from './types'
 
 // #region 遗留参数 (票 13 定稿值, 可调)
 /** 自动深挖上限/会话 (预算旋钮非质量旋钮, ≈3发/次) */
-export const TAG_REC_AUTO_DIG_MAX = 3
+export const TAG_REC_AUTO_DIG_MAX = 20
 /** 每轮选种扫描窗口；未知标签轮转补查，不按历史产出全局关闭。 */
-export const TAG_REC_SEED_POOL_MAX = 12
+export const TAG_REC_SEED_POOL_MAX = 100
 // A3-3: 每轮「池内新名单」抓取预算 —— seedPoolMax 上界 (200) 下最坏 200 发/干轮太宽;
 //   持久命中/已抓条目不占预算, 超预算条目本轮不参评 (池在则下轮再评, 不丢资格)
 export const TAG_REC_SEED_FETCH_BUDGET = 30
 /** 共现种子数 */
-export const TAG_REC_SEED_COUNT = 3
+export const TAG_REC_SEED_COUNT = 10
 /** 选种综合分门槛 (防共现冠军是纯垃圾) */
 export const TAG_REC_SEED_MIN_SCORE = 0
 /** 组路径同义词簇上限 */
 export const TAG_REC_CLIQUE_MAX = 5
-/** 兜底堆每干轮放行条数 (= service PAGE_SIZE) */
-export const TAG_REC_FALLBACK_PAGE = 20
+/** 兜底堆每干轮放行条数 */
+export const TAG_REC_FALLBACK_PAGE = 50
 // #endregion
 
 // #region 票 17 深挖策略分家参数 (tab2 激进档; tab1 沿用上行固定值)
 /** 浅水位预挖触发阈值: 本轮主池产出 < 此值 => 同轮顺手一发深挖 (不等干透) */
-export const TAG_REC_PREDIG_TRIGGER_YIELD = 10
+export const TAG_REC_PREDIG_TRIGGER_YIELD = 30
 /** adaptive 深挖低产判据: 0 < 单发净增 < 此值 => 记一轮低产 */
 export const TAG_REC_DIG_LOW_YIELD = 3
 /** adaptive 深挖低产连停: 连续此轮数低产 => 停自动转手动横幅 (三停之一) */
@@ -60,6 +60,8 @@ export const TAG_REC_DIG_LOW_YIELD_STREAK_MAX = 2
 export const DIG_STREAM_WINDOW = 4
 /** 退避恢复后首个 digPass 窗口减半的探测期 (BackoffGate.recentlyRecovered 判定窗) */
 export const DIG_RECOVERY_HALF_MS = 10_000
+/** 自动深挖预算/低产/早停用尽后的休息时长 —— 到点下一次梯队评估自动清零续挖 (懒恢复, 无后台计时) */
+export const DIG_REST_MS = 3 * 60_000
 /** Q6b: 组合 title/desc 短词流的页上限 —— 小额试探带出「同词家族」, 到顶即停不再轮转。 */
 export const TAG_REC_TEXT_SEED_PAGE_CAP = 2
 /** Q7a: 组合 title/desc 词开流的最大字符数; 超长词不开流 (搜索结果纯噪声, 纯本地精确匹配)。 */

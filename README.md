@@ -7,7 +7,7 @@
 [![许可证 GPL-3.0](https://img.shields.io/badge/license-GPL--3.0-blue)](LICENSE)
 [![安装 TagRec](https://img.shields.io/badge/安装-tagrec.cn-brightgreen)](https://www.tagrec.cn/install/)
 
-**[安装](https://www.tagrec.cn/install/) · [分享集市](https://www.tagrec.cn/) · [使用指南](https://www.tagrec.cn/#usage-guide) · [Issues](https://github.com/yunomega/Bilibili-Gate-TagRec/issues)**
+**[安装](https://www.tagrec.cn/install/) · [分享集市](https://www.tagrec.cn/) · [使用指南](https://www.tagrec.cn/#usage-guide) · [视频教程](https://www.bilibili.com/video/BV1U9pX6xE4s) · [Issues](https://github.com/yunomega/Bilibili-Gate-TagRec/issues)**
 
 ---
 
@@ -29,10 +29,10 @@ Bilibili-Gate 原有的首页推荐、动态、稍后再看、收藏、热门等
 2. **选兴趣。** 到[集市](https://www.tagrec.cn/)挑一份配置导入；或在 B 站「标签发掘」输入「旅游」「电影」等词自己探索。
 3. **开始看。** 回 [B 站首页](https://www.bilibili.com/)打开「主题推荐」，选中兴趣，刷视频。
 
-| 入口         | 适合                                     |
-| ------------ | ---------------------------------------- |
-| **主题推荐** | 持续刷收藏的兴趣，混看几个方向           |
-| **标签发掘** | 临时探索一个题材，或单独查看某个标签组   |
+| 入口         | 适合                                   |
+| ------------ | -------------------------------------- |
+| **主题推荐** | 持续刷收藏的兴趣，混看几个方向         |
+| **标签发掘** | 临时探索一个题材，或单独查看某个标签组 |
 
 ## 常用功能速览
 
@@ -40,11 +40,11 @@ Bilibili-Gate 原有的首页推荐、动态、稍后再看、收藏、热门等
 
 **筛选** — 右键视频卡片，按 UP 主 / 标题 / 简介 / 分区「屏蔽」或「仅看」。新装默认「淘沙」档（赞率 ≥2%），另有「全放」「只看高质量」。规则作用域三选一：
 
-| 范围 | 什么时候选 |
-| ---- | ---------- |
-| 临时 | 只想这次这样看，换查询即清 |
+| 范围 | 什么时候选                       |
+| ---- | -------------------------------- |
+| 临时 | 只想这次这样看，换查询即清       |
 | 本组 | 这个兴趣需要自己的规则，随组保存 |
-| 全局 | 长期生效，范围见菜单说明 |
+| 全局 | 长期生效，范围见菜单说明         |
 
 **导入与备份** — 粘贴分享链接 / ID / 导入码即可导入，预览时可处理同名冲突；「备份与导入 · JSON」用于换机备份。作者后续修改原分享不会改变你已导入的副本。
 

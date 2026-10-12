@@ -212,6 +212,14 @@ export type TagRecDiversityGuardSettings = {
   up: { enabled: boolean; max: number } // 单 UP 每切片上限 (默认 4, 1~10; owner.mid 计数, 缺即豁免)
 }
 
+/** 分区核验/停牌轮转出厂值 —— 消费点: partition-slice 预算 / tag-rec-custom 停牌账 */
+export const TAG_REC_VERIFY_REQUESTS = 40
+export const TAG_REC_VERIFY_CANDIDATES = 80
+export const TAG_REC_VERIFY_MS = 5_000
+export const TAG_REC_HELD_RETRY_QUOTA = 8
+export const TAG_REC_HELD_MAX_ATTEMPTS = 5
+export const TAG_REC_HELD_REVIVE_MS = 15 * 60_000
+
 /** 梯队高级参数 (票10): 语境级共享态无组级载体 => 全局块, 按治理池分档 */
 export type TagRecLadderSettings = {
   mode?: 'fixed' | 'adaptive' // 缺省保留自适应策略
@@ -225,6 +233,11 @@ export type TagRecLadderSettings = {
   seedCount: number // 每干轮选种数
   seedMinScore: number // 选种分数门槛 (单一全局标量)
   fallbackPage: number // 兜底堆放行页长
+  verifyRequests?: number // 每轮分区/素材/标签核验请求预算 (0 = 不核验)
+  verifyCandidates?: number // 每轮核验候选条数预算
+  verifyMs?: number // 每轮核验时间盒毫秒数
+  heldRetryQuota?: number // 每轮轮转重试的停牌条数名额
+  heldMaxAttempts?: number // 同一条自动重试上限 (到达转放弃, 「重试核实」清零)
 }
 
 export type TagRecSettingsSection = {
@@ -236,6 +249,8 @@ export type TagRecSettingsSection = {
   customTabSeen: boolean
   /** [tag-rec] 风控命中观测记录器 (票 10/11): 命中才写, 常态零成本; 默认开 */
   riskLog: { enabled: boolean }
+  /** 采样视角: 'public'(默认)=匿名+buvid 公共池; 'account'=用户 cookie 画像视角(实测搜索池 0 交集差异) */
+  samplingView?: 'public' | 'account'
   diversityGuard: TagRecDiversityGuardSettings
   ladder: TagRecLadderSettings
   filter: TagRecFilterSettings

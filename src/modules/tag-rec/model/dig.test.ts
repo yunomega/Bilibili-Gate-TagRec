@@ -13,6 +13,8 @@ import {
   TAG_REC_AUTO_DIG_MAX,
   TAG_REC_CLIQUE_MAX,
   TAG_REC_CROSS_CLIQUE_MAX,
+  TAG_REC_FALLBACK_PAGE,
+  TAG_REC_PREDIG_TRIGGER_YIELD,
   TAG_REC_SEED_COUNT,
   TAG_REC_SEED_MIN_SCORE,
   TAG_REC_SEED_POOL_MAX,
@@ -321,10 +323,11 @@ describe.concurrent('$modules/tag-rec/model/dig (票13)', () => {
       { bvid: 'zero', cooccur: 0, score: 99 }, // 零共现剔除
       { bvid: 'mid', cooccur: 3, score: 50 },
     ]
-    expect(TAG_REC_SEED_COUNT).toBe(3)
+    expect(TAG_REC_SEED_COUNT).toBe(10)
     expect(TAG_REC_SEED_MIN_SCORE).toBe(0)
-    expect(selectCooccurSeeds(cands)).toEqual(['strong-low', 'tie', 'best'])
-    expect(selectCooccurSeeds(cands, { minScore: 30 })).toEqual(['tie', 'best', 'mid'])
+    expect(selectCooccurSeeds(cands)).toEqual(['strong-low', 'tie', 'best', 'mid', 'low-co'])
+    expect(selectCooccurSeeds(cands, { count: 3 })).toEqual(['strong-low', 'tie', 'best'])
+    expect(selectCooccurSeeds(cands, { minScore: 30 })).toEqual(['tie', 'best', 'mid', 'low-co'])
   })
 
   it('.selectCooccurSeeds 种子不足取全部; 全不达标 => 空', () => {
@@ -393,11 +396,13 @@ describe.concurrent('$modules/tag-rec/model/dig (票13)', () => {
   })
   // #endregion
 
-  it('参数快照: K=3 自动深挖 / 池<12 触发选种 (票32) / score>=30 / top3 / 簇<=5', () => {
-    expect(TAG_REC_AUTO_DIG_MAX).toBe(3)
-    expect(TAG_REC_SEED_POOL_MAX).toBe(12)
+  it('参数快照: K=20 自动深挖 / 池<100 触发选种 (票32) / score>=0 / top10 / 簇<=5', () => {
+    expect(TAG_REC_AUTO_DIG_MAX).toBe(20)
+    expect(TAG_REC_SEED_POOL_MAX).toBe(100)
     expect(TAG_REC_SEED_MIN_SCORE).toBe(0)
-    expect(TAG_REC_SEED_COUNT).toBe(3)
+    expect(TAG_REC_SEED_COUNT).toBe(10)
     expect(TAG_REC_CLIQUE_MAX).toBe(5)
+    expect(TAG_REC_PREDIG_TRIGGER_YIELD).toBe(30)
+    expect(TAG_REC_FALLBACK_PAGE).toBe(50)
   })
 })
