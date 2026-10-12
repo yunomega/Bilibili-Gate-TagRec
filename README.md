@@ -101,6 +101,14 @@ pnpm typecheck && pnpm lint && pnpm test && pnpm test:licenses
 
 详见 [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md)。
 
+## 衍生与二开
+
+GPL-3.0 开源，欢迎 Fork、魔改、维护自己的版本，无需申请。
+
+衍生版本可去 [Discussions](https://github.com/yunomega/Bilibili-Gate-TagRec/discussions) 里挂出来，让找得到你的人聚过去；也可以在[集市](https://www.tagrec.cn/)上分享你的标签组。
+
+想合进上游的功能改动请先开 Issue 讨论——单人维护，Review 不承诺时限，但认真地写都有回应。
+
 ## 来源与许可
 
 **非官方社区项目，与哔哩哔哩（bilibili.com）无任何隶属、合作或背书关系。**
