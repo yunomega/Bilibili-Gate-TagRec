@@ -105,7 +105,9 @@ pnpm typecheck && pnpm lint && pnpm test && pnpm test:licenses
 
 GPL-3.0 开源，欢迎 Fork、魔改、维护自己的版本，无需申请。
 
-衍生版本可去 [Discussions](https://github.com/yunomega/Bilibili-Gate-TagRec/discussions) 里挂出来，让找得到你的人聚过去；也可以在[集市](https://www.tagrec.cn/)上分享你的标签组。
+衍生版本可去 [Discussions](https://github.com/yunomega/Bilibili-Gate-TagRec/discussions) 里挂出来，让找得到你的人聚过去；分享包格式兼容的话，你的用户也可以直接用[集市](https://www.tagrec.cn/)。
+
+衍生版本由各自作者独立维护，与官方版本无关、未经上游审查；请遵守 GPL-3.0，别作恶就好。
 
 想合进上游的功能改动请先开 Issue 讨论——单人维护，Review 不承诺时限，但认真地写都有回应。
 
