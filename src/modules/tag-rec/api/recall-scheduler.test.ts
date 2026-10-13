@@ -91,6 +91,41 @@ describe('按补货需求调度召回', () => {
   })
 })
 
+describe('foreground lane', () => {
+  it('queued foreground work drains ahead of queued background work', async () => {
+    const scheduler = new RecallScheduler()
+    const held = Promise.withResolvers<void>()
+    // 占满空闲并发
+    const active = [scheduler.run(() => held.promise), scheduler.run(() => held.promise)]
+    const order: string[] = []
+    const marker = (tag: string) => () => {
+      order.push(tag)
+      return Promise.resolve(tag)
+    }
+    const background = [scheduler.run(marker('b1')), scheduler.run(marker('b2'))]
+    const foreground = scheduler.run(marker('fg'), undefined, { foreground: true })
+    held.resolve()
+    await Promise.all([...active, ...background, foreground])
+    expect(order[0]).toBe('fg')
+  })
+
+  it('aborting a queued foreground task does not block later work', async () => {
+    const scheduler = new RecallScheduler()
+    const held = Promise.withResolvers<void>()
+    const active = [scheduler.run(() => held.promise), scheduler.run(() => held.promise)]
+    const controller = new AbortController()
+    const doomed = scheduler.run(() => Promise.resolve('x'), controller.signal, { foreground: true }).catch((e) => e)
+    const next = vi.fn(() => Promise.resolve('live'))
+    const pending = scheduler.run(next)
+    controller.abort()
+    expect(await doomed).toMatchObject({ name: 'AbortError' })
+    held.resolve()
+    await Promise.all(active)
+    expect(await pending).toBe('live')
+    expect(next).toHaveBeenCalledOnce()
+  })
+})
+
 describe('recall queue cancellation audit', () => {
   it('does not call an already-cancelled request', async () => {
     const scheduler = new RecallScheduler()

@@ -397,8 +397,6 @@ export class TagRecFavService extends BaseTabService {
    *   轻应用已同步生效链 => 原位重钉 (非 readonly, 否则 service 在漂移判定里恒漂移被顶替)
    */
   filterSignature: string
-  /** 生效过滤 JSON 基线 (轻应用 no-op 判定): materialize 后内容 —— 勾空名单等无效果编辑不触发重滤 */
-  private effectiveFilterJson?: string
 
   constructor() {
     super(TagRecFavService.PAGE_SIZE)
@@ -410,7 +408,6 @@ export class TagRecFavService extends BaseTabService {
     syncFavFilterState() // 实修票①: 过滤配置漂移 => seenBvids 复位, 放宽后已滤条重获参评资格
     sharedUpSearch.sync(this.recheckPlan().up)
     this.filterSignature = computeTagRecFavFilterSignature() // A4-3: 构造期钉点 (漂移判定输入; 不随轮重钉)
-    this.effectiveFilterJson = JSON.stringify(this.effectiveFilter())
     this.qs.bufferQueue = sharedBufferQueue // 票 37: 未上屏存货跨刷新存活 (签名变时上行已清)
     this.refilterSharedQueue() // 实修: 组 override/全局改后刷新, 存货按新生效链重滤 (旧配置滤出的不再直放)
     this.retryPartitions()
@@ -658,17 +655,17 @@ export class TagRecFavService extends BaseTabService {
   /**
    * 临时过滤轻应用 (过滤面板离场): 重滤存货队列 + 同步签名/纪元 (与重建同口径的簿记) ——
    *   不重建 service、不发请求; 已上屏条目由调用侧经 refilterDisplayed 原位重过一遍。
-   * 生效过滤未变 (如勾了空名单/无效果编辑) => 返回 false 整体跳过 —— 不翻纪元不重滤不动画面。
+   * 生效链输入未变 (无效果编辑) => 返回 false 整体跳过 —— 不翻纪元不重滤不动画面。
+   * no-op 判定走生效链签名而非物化 JSON: 会话声明值恰等于全局值时物化不变但链可翻转 (组/L1 异值)
    */
   applySessionFilterLive(): boolean {
-    const next = JSON.stringify(this.effectiveFilter())
-    if (this.effectiveFilterJson === next) return false
-    this.effectiveFilterJson = next
+    const sig = computeTagRecFavFilterSignature()
+    if (this.filterSignature === sig) return false
+    this.filterSignature = sig
     syncFavFilterState()
     // 生效链已吸收本次过滤变更 => 构造期钉点原位重钉 (否则 service 在 drift 判定里恒漂移,
     //   reuse/back/forward 一律重建顶替); 语境签名同步同口径 (fav 签名不含过滤段, 调用幂等)
     this.contextSignature = syncFavSharedState()
-    this.filterSignature = computeTagRecFavFilterSignature()
     this.refilterSharedQueue()
     // 过滤已变 => 旧「硬见底」判据失效 (可能正是旧过滤滤空所致): 复位硬见底闩让补货重新评估;
     //   新过滤下若仍零产, 下一轮 exhaustRound 会复置 (同 fetchMore 开头清 hardBottom 的先例)

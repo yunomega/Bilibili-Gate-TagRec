@@ -349,7 +349,7 @@ export function NumInput({
       value={value}
       placeholder={placeholder}
       disabled={disabled}
-      onChange={(v) => onChange(v ?? 0)}
+      onChange={(v) => onChange(v == null ? 0 : Math.min(max ?? Infinity, Math.max(min ?? -Infinity, v)))}
     />
   )
 }

@@ -882,7 +882,10 @@ export class TagRecFallbackLadder {
     if (!at && this.hasDueStreams() && (this.earlyStopped || this.autoDigCapped()))
       at = this.s.digResumeAt = Date.now() + DIG_REST_MS
     for (const s of this.s.streams.values()) if (s.retryAt && (!at || s.retryAt < at)) at = s.retryAt
-    if (at && !this.s.streams.values().some((s) => !s.exhausted || s.retryAt)) return 0
+    if (at) {
+      for (const s of this.s.streams.values()) if (!s.exhausted || s.retryAt) return at
+      return 0
+    }
     return at
   }
   canAutoDig() {

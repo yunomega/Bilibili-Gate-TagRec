@@ -1,5 +1,5 @@
 import { Button, Select, Typography } from 'antd'
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { useSnapshot } from 'valtio'
 import toast from '$utility/toast'
 import { resolveTagRecEffective, type TagRecFilterCore } from '../model/filter-engine'
@@ -22,6 +22,7 @@ export function SessionFilterEditor({
   declaredPools,
   basePoolsEnabled,
   onPoolInherit,
+  onNestedOverlayChange,
 }: {
   core: TagRecFilterCore
   getPopupContainer?: () => HTMLElement
@@ -29,11 +30,19 @@ export function SessionFilterEditor({
   declaredPools?: Partial<Record<TagRecPoolKey, boolean>>
   basePoolsEnabled?: Partial<Record<TagRecPoolKey, boolean>>
   onPoolInherit?: (pool: TagRecPoolKey) => void
+  /** 格深编弹层开合上报 —— 宿主 Popover 据此在外部点击期间保持开态 (弹层挂 body, 点击=面板外) */
+  onNestedOverlayChange?: (open: boolean) => void
 }) {
   const snap = useSnapshot(core)
   const [scope, setScope] = useState<'core' | TagRecPoolKey>('core')
   const [tab, setTab] = useState<'list' | 'dims' | 'score'>('list')
-  const [cellEditing, setCellEditing] = useState<TagRecPoolKey>()
+  const [cellEditing, setCellEditingState] = useState<TagRecPoolKey>()
+  const setCellEditing = (pool?: TagRecPoolKey) => {
+    setCellEditingState(pool)
+    onNestedOverlayChange?.(!!pool)
+  }
+  // 卸载兜底上报 (镜像纪元重挂载会拆掉带弹层的旧实例, 宿主闸不能留在开位)
+  useEffect(() => () => onNestedOverlayChange?.(false), [])
   const isCell = scope !== 'core'
   const tabs: [typeof tab, string][] = isCell
     ? [
@@ -102,29 +111,13 @@ export function SessionFilterEditor({
           )}
           {tab === 'dims' && (
             <>
-              <div className='flex flex-wrap gap-8px'>
-                {TAG_REC_POOL_KEYS.map((p) => (
-                  <label key={p}>
-                    {TAG_REC_POOL_LABELS[p]}{' '}
-                    <Select
-                      size='small'
-                      value={declaredPools?.[p] === undefined ? 'inherit' : declaredPools[p] ? 'on' : 'off'}
-                      options={[
-                        { value: 'inherit', label: `继承（${basePoolsEnabled?.[p] === false ? '不使用' : '使用'}）` },
-                        { value: 'on', label: '使用' },
-                        { value: 'off', label: '不使用' },
-                      ]}
-                      onChange={(value) => {
-                        core.poolsEnabled ??= {}
-                        if (value === 'inherit') {
-                          onPoolInherit?.(p)
-                          core.poolsEnabled[p] = basePoolsEnabled?.[p] ?? true
-                        } else core.poolsEnabled[p] = value === 'on'
-                      }}
-                    />
-                  </label>
-                ))}
-              </div>
+              <TagRecPoolEnabledSelects
+                core={core}
+                declaredPools={declaredPools}
+                basePoolsEnabled={basePoolsEnabled}
+                onPoolInherit={onPoolInherit}
+                getPopupContainer={getPopupContainer}
+              />
               <DimsSection
                 core={core}
                 snap={snap}
@@ -162,6 +155,52 @@ export function SessionFilterEditor({
           onClose={() => setCellEditing(undefined)}
         />
       )}
+    </div>
+  )
+}
+
+/**
+ * 四池「使用/不使用/继承」开关行 —— Select 弹层必须挂进宿主容器 (getPopupContainer):
+ *   挂 body 时选项点击对宿主 Popover 是外部点击, 会先关面板先应用 (携带旧覆盖),
+ *   onChange 随后写入的覆盖被晾成「需刷新才生效」
+ */
+export function TagRecPoolEnabledSelects({
+  core,
+  declaredPools,
+  basePoolsEnabled,
+  onPoolInherit,
+  getPopupContainer,
+}: {
+  core: TagRecFilterCore
+  declaredPools?: Partial<Record<TagRecPoolKey, boolean>>
+  basePoolsEnabled?: Partial<Record<TagRecPoolKey, boolean>>
+  onPoolInherit?: (pool: TagRecPoolKey) => void
+  getPopupContainer?: () => HTMLElement
+}) {
+  return (
+    <div className='flex flex-wrap gap-8px'>
+      {TAG_REC_POOL_KEYS.map((p) => (
+        <label key={p}>
+          {TAG_REC_POOL_LABELS[p]}{' '}
+          <Select
+            size='small'
+            getPopupContainer={getPopupContainer}
+            value={declaredPools?.[p] === undefined ? 'inherit' : declaredPools[p] ? 'on' : 'off'}
+            options={[
+              { value: 'inherit', label: `继承（${basePoolsEnabled?.[p] === false ? '不使用' : '使用'}）` },
+              { value: 'on', label: '使用' },
+              { value: 'off', label: '不使用' },
+            ]}
+            onChange={(value) => {
+              core.poolsEnabled ??= {}
+              if (value === 'inherit') {
+                onPoolInherit?.(p)
+                core.poolsEnabled[p] = basePoolsEnabled?.[p] ?? true
+              } else core.poolsEnabled[p] = value === 'on'
+            }}
+          />
+        </label>
+      ))}
     </div>
   )
 }

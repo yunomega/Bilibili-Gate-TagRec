@@ -21,6 +21,7 @@ import { showModalSettings } from '$components/RecHeader/modals'
 import { useOnRefresh, useRecSelfContext } from '$components/Recommends/rec.shared'
 import { usePopupContainer } from '$modules/rec-services/_base'
 import toast from '$utility/toast'
+import { tagRecBackoff } from '../api/backoff'
 import { ALLV2_PAGE_CAP, fetchAllV2Search, fetchSuggest, fetchTagInfoById, fetchTagInfoByName } from '../api/endpoints'
 import {
   describeTagRecCondition,
@@ -133,6 +134,19 @@ export function cooccurEffectiveNextPage(
   const own = ownCursor + 1
   const floor = dig && dig.keyword === name && Number.isFinite(dig.nextPage) ? Math.max(1, Math.floor(dig.nextPage)) : 1
   return Math.max(own, floor)
+}
+
+/** 交互取数死线: 前台按钮的等待必须有界 —— 静默排队/悬挂时中止本路并明示可重试 */
+const TAG_REC_INTERACTIVE_DEADLINE_MS = 45_000
+function raceInteractiveDeadline<T>(work: Promise<T>, abort: () => void): Promise<T | 'timeout'> {
+  let timer: ReturnType<typeof setTimeout> | undefined
+  const deadline = new Promise<'timeout'>((resolve) => {
+    timer = setTimeout(() => {
+      abort()
+      resolve('timeout')
+    }, TAG_REC_INTERACTIVE_DEADLINE_MS)
+  })
+  return Promise.race([work, deadline]).finally(() => clearTimeout(timer))
 }
 
 function groupsOf(node: TagRecConditionGroup): TagRecConditionGroup[] {
@@ -390,14 +404,26 @@ export function TagRecWorkbenchView({ service }: { service: TagRecCustomService 
       setBusy(false)
       return
     }
+    if (tagRecBackoff.isEngaged) {
+      setBusy(false)
+      toast('退避中,恢复后再查')
+      return
+    }
     const parsed = parseTagInput(input)
-    const results = await Promise.allSettled([
-      parsed?.kind === 'id'
-        ? fetchTagInfoById(parsed.id, controller.signal)
-        : fetchTagInfoByName(input, controller.signal),
-      fetchAllV2Search(input, { page: 1, signal: controller.signal }),
-      fetchSuggest(input, controller.signal),
-    ])
+    const results = await raceInteractiveDeadline(
+      Promise.allSettled([
+        parsed?.kind === 'id'
+          ? fetchTagInfoById(parsed.id, controller.signal)
+          : fetchTagInfoByName(input, controller.signal),
+        fetchAllV2Search(input, { page: 1, signal: controller.signal, foreground: true }),
+        fetchSuggest(input, controller.signal, { foreground: true }),
+      ]),
+      () => controller.abort(),
+    )
+    if (results === 'timeout') {
+      if (revision === searchRevision.current) toast('请求排队过久,已停止本次查找,可重试')
+      return
+    }
     if (controller.signal.aborted || revision !== searchRevision.current) return
     const found: Material[] = [...literal]
     const info = results[0].status === 'fulfilled' ? results[0].value : undefined
@@ -491,6 +517,10 @@ export function TagRecWorkbenchView({ service }: { service: TagRecCustomService 
     const target = alive.reduce((a, b) => (cooccurNextPage(a) <= cooccurNextPage(b) ? a : b))
     const key = target.norm
     const ownNext = (cooccurDigCursor.get(key) ?? 0) + 1
+    if (tagRecBackoff.isEngaged) {
+      toast('退避中,恢复后再挖')
+      return
+    }
     searchRef.current?.abort()
     const controller = new AbortController()
     searchRef.current = controller
@@ -499,10 +529,18 @@ export function TagRecWorkbenchView({ service }: { service: TagRecCustomService 
     try {
       const page = cooccurNextPage(target)
       const skipped = page - ownNext
-      const res = await fetchAllV2Search(target.name, { page, signal: controller.signal }).then(
-        (v) => ({ v }),
-        () => undefined,
+      const res = await raceInteractiveDeadline(
+        fetchAllV2Search(target.name, { page, signal: controller.signal, foreground: true }).then(
+          (v) => ({ v }),
+          () => undefined,
+        ),
+        () => controller.abort(),
       )
+      if (res === 'timeout') {
+        // 已被新动作接替 (revision 前进) 时静默 —— 死线提示只报给「当前这次」
+        if (revision === searchRevision.current) toast('请求排队过久,已停止本次深挖,可重试')
+        return
+      }
       if (controller.signal.aborted || revision !== searchRevision.current) return
       if (!res) {
         toast(`「${target.name}」第 ${page} 页拉取失败，请重试`)

@@ -357,7 +357,7 @@ const allV2Cache = new SessionFetchCache<string, AllV2VideoItem[]>({
 
 export function fetchAllV2Search(
   keyword: string,
-  { page = 1, signal }: { page?: number; signal?: AbortSignal } = {},
+  { page = 1, signal, foreground }: { page?: number; signal?: AbortSignal; foreground?: boolean } = {},
 ): Promise<AllV2VideoItem[]> {
   return allV2Cache.fetch(
     `${keyword}:${page}`,
@@ -371,6 +371,7 @@ export function fetchAllV2Search(
             return anonGetJson('/x/web-interface/search/all/v2', { keyword, page }, entrySignal)
           }),
         entrySignal,
+        { foreground },
       )) as AllV2SearchJson
       if (!isWebApiSuccess(json)) {
         appWarn('[tag-rec] search/all/v2?keyword=%s&page=%s failed: %o', keyword, page, json)
@@ -413,7 +414,11 @@ const suggestCache = new SessionFetchCache<string, string[] | undefined>({
 })
 
 /** Repeated suggestion consumers share one request; failures remain optional UI hints. */
-export async function fetchSuggest(term: string, signal?: AbortSignal): Promise<string[]> {
+export async function fetchSuggest(
+  term: string,
+  signal?: AbortSignal,
+  opts?: { foreground?: boolean },
+): Promise<string[]> {
   try {
     return (
       (await suggestCache.fetch(
@@ -422,6 +427,7 @@ export async function fetchSuggest(term: string, signal?: AbortSignal): Promise<
           const json = (await tagRecRecallScheduler.run(
             () => anonGetJson('/x/web-interface/suggest', { term }, entrySignal),
             entrySignal,
+            opts,
           )) as SuggestJson
           if (!isWebApiSuccess(json)) return undefined
           const tags = json.data?.result?.tag

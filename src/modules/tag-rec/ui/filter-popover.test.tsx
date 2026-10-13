@@ -8,6 +8,7 @@ import {
   type TagRecSessionFilterPatch,
 } from '../model/filter-engine'
 import { DimsSection } from './filter-form'
+import { TagRecPoolEnabledSelects } from './session-filter-editor'
 import { FilterPopover } from './tabbar-custom'
 import type * as Antd from 'antd'
 import type { Select } from 'antd'
@@ -131,6 +132,32 @@ describe('会话过滤弹层', () => {
     const container = h.selects[0].getPopupContainer
     expect(container).toBeTypeOf('function')
     for (const select of h.selects) expect(select.getPopupContainer).toBe(container)
+  })
+
+  it('池开关下拉挂进宿主容器 (挂 body = 选项点击被面板判外部点击, 先关先晾覆盖)', () => {
+    const core = proxy(createTagRecFactoryFilterCore())
+    const container = () => ({ tagName: 'POPOVER-CONTENT' }) as unknown as HTMLElement
+    renderToStaticMarkup(
+      <TagRecPoolEnabledSelects
+        core={core}
+        declaredPools={undefined}
+        basePoolsEnabled={{ tagTop: true, allV2: false }}
+        getPopupContainer={container}
+      />,
+    )
+    const poolSelects = h.selects.filter((s) =>
+      (s.options as { value: string }[] | undefined)?.some((o) => o.value === 'inherit'),
+    )
+    expect(poolSelects).toHaveLength(4)
+    for (const select of poolSelects) expect(select.getPopupContainer).toBe(container)
+    // 全继承态 => 4 选皆显示「继承」; onChange 写 core.poolsEnabled (会话差分由弹层订阅取)
+    for (const select of poolSelects) expect(select.value).toBe('inherit')
+    ;(poolSelects[0].onChange as (v: string) => void)('off')
+    expect(core.poolsEnabled?.tagTop).toBe(false)
+    ;(poolSelects[1].onChange as (v: string) => void)('on')
+    expect(core.poolsEnabled?.allV2).toBe(true)
+    ;(poolSelects[1].onChange as (v: string) => void)('inherit') // 回继承 => 落组解值
+    expect(core.poolsEnabled?.allV2).toBe(false)
   })
 
   it('时长维: 预设档下拉写回秒端点; 非预设端点落「自定义」并露时:分输入', () => {

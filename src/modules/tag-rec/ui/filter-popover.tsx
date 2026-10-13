@@ -47,6 +47,9 @@ export function FilterPopover({
   const [mirrorEpoch, setMirrorEpoch] = useState(0)
   const borderColor = usePopoverBorderColor()
   const contentRef = useRef<HTMLDivElement>(null)
+  // 「格」深编等嵌套弹层挂 document.body —— 弹层内点击于本面板均为外部点击,
+  //   开态期间须拒收关闭请求, 否则面板先关先应用 (携带编辑前旧覆盖) 而弹层改动被晾成「需刷新」
+  const nestedOverlayRef = useRef(false)
   const scrollRef = useRef<HTMLDivElement>(null)
   // 内嵌控件 (预设 Select/分区 Select) 的弹层挂进 Popover 内容节点:
   // 挂 body 会被外层 Popover 判「外部点击」误关 (spec §5.2 usePopupContainer 就近原则同旨)
@@ -119,6 +122,7 @@ export function FilterPopover({
   }, [scopeRevision])
 
   const onOpenChange = (next: boolean) => {
+    if (!next && nestedOverlayRef.current) return // 嵌套弹层交互中: 拒收外部点击关闭
     setOpen(next)
     if (next) scrollRef.current?.scrollTo({ top: 0 })
     if (!next && dirtyRef.current) {
@@ -179,6 +183,9 @@ export function FilterPopover({
           core={core}
           declaredPools={filterOverride?.poolsEnabled}
           basePoolsEnabled={editor.base.poolsEnabled}
+          onNestedOverlayChange={(next) => {
+            nestedOverlayRef.current = next
+          }}
           onPoolInherit={(pool) => {
             if (session.filterOverride?.poolsEnabled) delete session.filterOverride.poolsEnabled[pool]
           }}

@@ -13,7 +13,7 @@ import {
   newTagRecCombination,
   tagRecConditionAtom,
 } from '../model/combination'
-import { createTagRecFactoryFilterCore } from '../model/filter-engine'
+import { createTagRecFactoryFilterCore, type TagRecSessionFilterPatch } from '../model/filter-engine'
 import { normalizeAllV2Item } from '../model/normalize-item'
 import { favorites, favoritesL1 } from '../store'
 import { emptyTagRecFilterStats, tagRecCustomSession, tagRecFavSession } from '../store/session'
@@ -382,6 +382,38 @@ describe.each(services)('$name 的实际分区交付', ({ Service, session, tab 
     expect(svc.refilterDisplayed([keep, drop]).map((entry) => entry.bvid)).toEqual([keep.bvid]) // 已上屏条目重滤
     expect(svc.applySessionFilterLive()).toBe(false) // 生效过滤未变 => no-op 跳过 (零画面变化)
     expect(fetchTagTop).not.toHaveBeenCalled() // 零请求
+  })
+
+  it('临时过滤轻应用: 池开关差分生效 —— 失池条目存货/上屏一并滤出', () => {
+    const svc = stock()
+    const pooled = item('pool-keep')
+    svc.qs.bufferQueue.push(pooled)
+    const poolsOff: TagRecSessionFilterPatch = { dims: {}, poolsEnabled: { allV2: false } }
+    session.filterOverride = poolsOff
+    expect(svc.applySessionFilterLive()).toBe(true)
+    expect(svc.qs.bufferQueue.filter((entry) => entry.api === EApiType.TagRec)).toHaveLength(0)
+    expect(svc.refilterDisplayed([pooled])).toHaveLength(0) // 失池 claim 失活 => poolFilter 维滤除
+  })
+
+  it('临时过滤轻应用: 声明值与全局物化撞值时仍按生效链判定 (组层=off, 会话=on)', () => {
+    // no-op 判定的盲区: 物化对全局 base, 差分对组解 base —— 会话声明值恰等于全局值时
+    //   物化 JSON 不变但生效链已翻转 (组 off => 会话 on), 撞值跳过会把变更吞成「需刷新」
+    settings.tagRec.filter.poolsEnabled = { allV2: true } // 全局显式声明 on
+    favorites.list[0].overrides = { poolsEnabled: { allV2: false } } // 组层 off => 组解 base=false
+    // 构造即带覆盖 => 钉点即物化形 (不再受 settings 元数据键差异掩护)
+    const titleOnly: TagRecSessionFilterPatch = { dims: { titleAllow: { enabled: true, list: ['alpha'] } } }
+    session.filterOverride = titleOnly
+    const svc = stock()
+    const pooled = item('pool-live', { title: 'alpha' })
+    svc.qs.bufferQueue.push(pooled)
+    // 会话再声明 allV2=on —— 恰等于全局值: 物化 JSON 与钉点全同, 但链上 allV2 false=>true
+    const declaredOn: TagRecSessionFilterPatch = {
+      dims: { titleAllow: { enabled: true, list: ['alpha'] } },
+      poolsEnabled: { allV2: true },
+    }
+    session.filterOverride = declaredOn
+    expect(svc.applySessionFilterLive()).toBe(true) // 物化撞值不得吞变更
+    expect(svc.qs.bufferQueue.filter((entry) => entry.api === EApiType.TagRec)).toContain(pooled)
   })
 
   it('辅助过滤关闭时仍守完整组合，必要补查后交付，失败的未知保留库存', async () => {

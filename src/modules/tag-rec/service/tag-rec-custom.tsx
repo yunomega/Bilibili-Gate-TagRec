@@ -786,8 +786,6 @@ export class TagRecCustomService extends BaseTabService {
    *   轻应用已同步生效链 => 原位重钉 (非 readonly, 否则 service 在漂移判定里恒漂移被顶替)
    */
   filterSignature: string
-  /** 生效过滤 JSON 基线 (轻应用 no-op 判定): materialize 后内容 —— 勾空名单等无效果编辑不触发重滤 */
-  private effectiveFilterJson?: string
 
   constructor() {
     super(TagRecCustomService.PAGE_SIZE)
@@ -800,7 +798,6 @@ export class TagRecCustomService extends BaseTabService {
     syncCustomFilterState() // 实修票①: 过滤配置漂移 => seenBvids 复位, 放宽后已滤条重获参评资格
     sharedUpSearch.sync(this.recheckPlan().up)
     this.filterSignature = computeTagRecCustomFilterSignature() // A4-3: 构造期钉点 (不随轮重钉)
-    this.effectiveFilterJson = JSON.stringify(this.effectiveFilter())
     this.qs.bufferQueue = sharedBufferQueue // 票 37: 未上屏存货跨刷新存活 (签名变时上行已清)
     this.refilterSharedQueue() // 实修: 配置漂移 (组 override/会话覆盖/全局改) 后刷新, 存货按新生效链重滤
     this.retryPartitions()
@@ -1360,18 +1357,19 @@ export class TagRecCustomService extends BaseTabService {
   /**
    * 临时过滤轻应用 (过滤面板离场): 重滤存货队列 + 同步签名/纪元 (与重建同口径的簿记) ——
    *   不重建 service、不发请求; 已上屏条目由调用侧经 refilterDisplayed 原位重过一遍。
-   * 生效过滤未变 (如勾了空名单/无效果编辑) => 返回 false 整体跳过 —— 不翻纪元不重滤不动画面。
+   * 生效链输入未变 (勾空名单/声明值与全链解析同值等无效果编辑) => 返回 false 整体跳过。
+   * no-op 判定走生效链签名而非物化 JSON: 差分按「组解」基底记录而物化对全局基底,
+   *   会话声明值恰等于全局值时物化不变但生效链已翻转 (组/L1 层异值), 物化对比会把变更吞成「需刷新」
    */
   applySessionFilterLive(): boolean {
-    const next = JSON.stringify(this.effectiveFilter())
-    if (this.effectiveFilterJson === next) return false
-    this.effectiveFilterJson = next
+    const sig = computeTagRecCustomFilterSignature()
+    if (this.filterSignature === sig) return false
+    this.filterSignature = sig
     syncCustomFilterState()
     // 语境签名含组合过滤段 (tagRecCombinationSignature 计入 filters): 组合对象被镜像换身后
     //   钉点过期 => isSessionStale() 恒真、交付循环静默空转 (此前仅 fetchMore 内同步可自愈,
     //   队列有货不走取数的路径永远卡死); 共享态簿记 (深挖流作废/轮次纪元/计数归零) 提前到位
     this.contextSignature = syncCustomSharedState().sig
-    this.filterSignature = computeTagRecCustomFilterSignature()
     this.refilterSharedQueue()
     // 过滤已变 => 旧「硬见底」判据失效 (可能正是旧过滤滤空所致): 复位硬见底闩让补货重新评估;
     //   新过滤下若仍零产, 下一轮 exhaustRound 会复置 (同 fetchMore 开头清 hardBottom 的先例)
